@@ -210,9 +210,14 @@ foreach ($m in $msis) {
   Write-Host "    msiexec /a $($m.Name)"
   $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$swiftRoot`"", '/L*v', "`"$dl\$($m.BaseName).admin.log`"") -Wait -PassThru
   if ($p.ExitCode -ne 0) { Get-Content "$dl\$($m.BaseName).admin.log" -Tail 30; throw "msiexec /a $($m.Name) failed: $($p.ExitCode)" }
+  $nfiles = @(Get-ChildItem -Path $swiftRoot -Recurse -File).Count
+  Write-Host "      -> $nfiles files total in admin image"
 }
-# admin installs leave copies of the .msi files in TARGETDIR - drop them
-Get-ChildItem -Path $swiftRoot -Filter *.msi -Recurse | Remove-Item -Force
+# admin installs leave copies of the .msi files in the TARGETDIR root - drop those (only top level)
+Get-ChildItem -Path $swiftRoot -Filter *.msi | Remove-Item -Force
+Write-Host '    swiftCore.dll locations:'
+Get-ChildItem -Path $swiftRoot -Recurse -Filter swiftCore.dll | ForEach-Object { Write-Host "      $($_.FullName)" }
+Get-ChildItem -Path $swiftRoot -Recurse -Include *.msi, *.msm | ForEach-Object { Write-Host "      nested: $($_.FullName)" }
 $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
 $swiftExe = Get-ChildItem -Path $swiftRoot -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
