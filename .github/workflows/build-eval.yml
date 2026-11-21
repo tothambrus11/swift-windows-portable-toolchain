@@ -1,0 +1,34 @@
+name: build-eval
+
+on:
+  push:
+    branches: [exp/build-vs-repackage]
+    paths: ['build-eval/**', '.github/workflows/build-eval.yml']
+  workflow_dispatch:
+
+jobs:
+  inspect-bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner disk
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}} | Out-String | Write-Host
+      - name: Inspect official bundle
+        run: ./build-eval/inspect-bundle.ps1 -Arch ${{ matrix.arch }} -Out "$PWD\out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bundle-inspection-${{ matrix.arch }}
+          path: out/
