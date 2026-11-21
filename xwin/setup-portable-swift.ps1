@@ -34,6 +34,10 @@ param(
   [string]$CrtVersion = '',
   [string]$SdkVersion = '',
   [switch]$IncludeDebugLibs,
+  # Where the Windows SDK half comes from: 'nuget' (official Microsoft.Windows.SDK.CPP packages, complete)
+  # or 'xwin' (VS manifest via xwin; its pruning drops headers such as ucrt\corecrt_math.h)
+  [ValidateSet('nuget', 'xwin')][string]$SdkSource = 'nuget',
+  [string]$NugetSdkVersion = '',
   [switch]$AcceptMicrosoftLicense,
   # Keep the downloaded installer / xwin cache (useful for CI caching)
   [switch]$KeepDownloads,
@@ -277,10 +281,44 @@ Write-Host "    xwin $($xargs -join ' ')"
 if ($LASTEXITCODE -ne 0) { throw "xwin failed: $LASTEXITCODE" }
 $stats.xwin_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 $stats.xwin_download_mb = Get-DirSizeMB (Join-Path $xcache 'dl')
+$kits = Join-Path $sysroot 'Windows Kits\10'
+if (Test-Path (Join-Path $kits 'Include')) {
+  $x = Get-ChildItem (Join-Path $kits 'Include') -Directory | Select-Object -First 1
+  $stats.xwin_has_corecrt_math_h = Test-Path (Join-Path $x.FullName 'ucrt\corecrt_math.h')
+}
+
+if ($SdkSource -eq 'nuget') {
+  # Replace xwin's (pruned) Windows SDK with the complete one from Microsoft's official NuGet packages
+  Write-Step 'Fetching Windows SDK from NuGet (Microsoft.Windows.SDK.CPP + .<arch>)'
+  $t.Restart()
+  if (-not $NugetSdkVersion) {
+    $vers = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/index.json').versions | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
+    if ($SdkVersion) { $vers = $vers | Where-Object { $_.StartsWith($SdkVersion) } }
+    $NugetSdkVersion = $vers[-1]
+  }
+  Remove-Item -Recurse -Force $kits -ErrorAction SilentlyContinue
+  $ng = Join-Path $dl 'nuget'; New-Item -ItemType Directory -Force -Path $ng | Out-Null
+  $dlBytes = 0
+  foreach ($pkg in @('microsoft.windows.sdk.cpp', "microsoft.windows.sdk.cpp.$Arch")) {
+    $f = Join-Path $ng "$pkg.zip"
+    Invoke-Download "https://api.nuget.org/v3-flatcontainer/$pkg/$NugetSdkVersion/$pkg.$NugetSdkVersion.nupkg" $f
+    $dlBytes += (Get-Item $f).Length
+    $x = Join-Path $ng $pkg; New-Item -ItemType Directory -Force -Path $x | Out-Null
+    if ($pkg -eq 'microsoft.windows.sdk.cpp') { & tar.exe -xf $f -C $x 'c/Include' } else { & tar.exe -xf $f -C $x 'c/ucrt' 'c/um' }
+    if ($LASTEXITCODE -ne 0) { throw "failed to extract $pkg" }
+  }
+  $incVer = (Get-ChildItem (Join-Path $ng 'microsoft.windows.sdk.cpp\c\Include') -Directory | Select-Object -First 1).Name
+  New-Item -ItemType Directory -Force -Path "$kits\Include", "$kits\Lib\$incVer" | Out-Null
+  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp\c\Include\$incVer") "$kits\Include\$incVer"
+  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\ucrt") "$kits\Lib\$incVer\ucrt"
+  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\um") "$kits\Lib\$incVer\um"
+  $stats.nuget_sdk_version = $NugetSdkVersion
+  $stats.nuget_download_mb = [math]::Round($dlBytes / 1MB, 1)
+  $stats.nuget_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
+}
 $stats.sysroot_disk_mb = Get-DirSizeMB $sysroot
 
 $vcRoot = Get-ChildItem -Path (Join-Path $sysroot 'VC\Tools\MSVC') -Directory | Sort-Object Name | Select-Object -Last 1
-$kits = Join-Path $sysroot 'Windows Kits\10'
 $sdkInc = Get-ChildItem -Path (Join-Path $kits 'Include') -Directory | Sort-Object Name | Select-Object -Last 1
 $vcVer = $vcRoot.Name; $sdkVer = $sdkInc.Name
 $stats.msvc_version = $vcVer; $stats.winsdk_version = $sdkVer
@@ -299,6 +337,13 @@ foreach ($l in $lib) { if (-not (Test-Path $l)) { Get-ChildItem -Recurse -Direct
 if (-not $KeepDownloads) {
   Write-Step 'Removing downloads'
   Remove-Item -Recurse -Force $dl -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------- clang default config
+# swiftc links through clang.exe, which defaults to MSVC link.exe (absent without VS). Clang reads
+# <clang-dir>\clang.cfg by default, so make lld the default linker for every clang/swiftc invocation.
+foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
+  Set-Content -Path (Join-Path $toolchainBin $cfg) -Value @('# added by setup-portable-swift.ps1: no link.exe without Visual Studio', '-fuse-ld=lld') -Encoding ASCII
 }
 
 # ---------------------------------------------------------------- activation scripts
