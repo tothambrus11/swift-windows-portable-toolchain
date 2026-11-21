@@ -64,7 +64,7 @@ jobs:
           if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
           "setup took $([math]::Round($t.TotalSeconds,1))s"
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item "$env:LOCALAPPDATAswift-portablesetup-stats.json","$env:LOCALAPPDATAswift-portablectivate.ps1" out/
+          Copy-Item "$env:LOCALAPPDATA\swift-portable\setup-stats.json","$env:LOCALAPPDATA\swift-portablectivate.ps1" out/
           Get-Content "$env:LOCALAPPDATA\swift-portable\setup-stats.json"
           Get-Content "$env:LOCALAPPDATA\swift-portable\activate.ps1"
           "## Setup stats (${{ matrix.arch }})`n``````json`n$(Get-Content -Raw "$env:LOCALAPPDATA\swift-portable\setup-stats.json")`n``````" >> $env:GITHUB_STEP_SUMMARY
