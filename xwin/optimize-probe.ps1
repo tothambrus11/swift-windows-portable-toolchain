@@ -13,6 +13,15 @@ let f = DateFormatter()
 f.dateFormat = "yyyy"
 print(f.string(from: Date(timeIntervalSince1970: 0)))
 '@
+# Repro + an explicit `import FoundationEssentials` (as tests/foundation.swift has)
+Set-Content repro-ess.swift -Value @'
+import Foundation
+import FoundationEssentials
+let f = DateFormatter()
+f.dateFormat = "yyyy"
+print(f.string(from: Date(timeIntervalSince1970: 0)))
+'@
+(Get-Content foundation.swift) | Where-Object { $_ -notmatch 'FoundationEssentials|^#if canImport|^#endif' } | Set-Content foundation-noess.swift
 # Same but only FoundationEssentials API (JSONEncoder) via `import Foundation`
 Set-Content essentials.swift -Value @'
 import Foundation
@@ -37,20 +46,30 @@ Show 'repro -Onone (link+run)' { swiftc -Onone repro.swift -o r0.exe; if ($?) { 
 Show 'repro -O (link+run)' { swiftc -O repro.swift -o r1.exe; if ($?) { .\r1.exe } }
 Show 'essentials -O (link+run)' { swiftc -O essentials.swift -o e1.exe; if ($?) { .\e1.exe } }
 Show 'repro -Onone -wmo' { swiftc -Onone -wmo repro.swift -o r2.exe; if ($?) { .\r2.exe } }
+Show 'repro+import FoundationEssentials -O' { swiftc -O repro-ess.swift -o re1.exe; if ($?) { .\re1.exe } }
+Show 'repro+import FoundationEssentials -Onone' { swiftc -Onone repro-ess.swift -o re0.exe; if ($?) { .\re0.exe } }
+Show 'foundation.swift -O' { swiftc -O foundation.swift -o f1.exe; if ($?) { .\f1.exe | Select-Object -Last 1 } }
+Show 'foundation.swift without FoundationEssentials import -O' { swiftc -O foundation-noess.swift -o f2.exe; if ($?) { .\f2.exe | Select-Object -Last 1 } }
 Show 'repro -O -lFoundation' { swiftc -O repro.swift -lFoundation -o r3.exe; if ($?) { .\r3.exe } }
 Show 'foundation.swift -O -lFoundation' { swiftc -O foundation.swift -lFoundation -o f3.exe; if ($?) { .\f3.exe } }
 Show 'repro -O -driver-print-jobs' { swiftc -O repro.swift -o r4.exe -driver-print-jobs }
 Show 'repro -Onone -driver-print-jobs' { swiftc -Onone repro.swift -o r5.exe -driver-print-jobs }
 
 # Object-level comparison: autolink directives and undefined Foundation symbols
-swiftc -Onone -c repro.swift -o r-onone.o 2>&1 | Out-Null
-swiftc -O -c repro.swift -o r-o.o 2>&1 | Out-Null
-Show 'autolink directives -Onone' { Get-Directives r-onone.o }
-Show 'autolink directives -O' { Get-Directives r-o.o }
+foreach ($src in 'repro', 'repro-ess') { foreach ($o in 'Onone', 'O') {
+  swiftc "-$o" -c "$src.swift" -o "$Work\$src-$o.o" 2>&1 | Out-Null
+  Show "autolink directives $src -$o" { Get-Directives "$Work\$src-$o.o" }
+} }
+Show 'SwiftPM release link command for FoundationDemo' {
+  Copy-Item -Recurse (Join-Path $PSScriptRoot 'tests\swiftpkg') "$Work\pkg"
+  Push-Location "$Work\pkg"
+  swift build -c release -v --product FoundationDemo 2>&1 | Select-String -SimpleMatch 'FoundationDemo.exe' | Select-Object -First 3 | ForEach-Object { $_.Line.Substring(0, [math]::Min(3000, $_.Line.Length)) }
+  Pop-Location
+}
 $nm = Get-Command llvm-nm -ErrorAction SilentlyContinue
 if ($nm) {
-  Show 'undefined Foundation symbols -Onone' { llvm-nm -u r-onone.o | Select-String '10Foundation|Foundation' }
-  Show 'undefined Foundation symbols -O' { llvm-nm -u r-o.o | Select-String '10Foundation|Foundation' }
+  Show 'undefined Foundation symbols -Onone' { llvm-nm -u "$Work\repro-ess-Onone.o" | Select-String '10Foundation|Foundation' }
+  Show 'undefined Foundation symbols -O' { llvm-nm -u "$Work\repro-ess-O.o" | Select-String '10Foundation|Foundation' }
   $libdir = Get-ChildItem (Join-Path $env:SDKROOT 'usr\lib\swift\windows') -Recurse -Filter Foundation.lib | Select-Object -First 1
   Show "Foundation import libs ($($libdir.DirectoryName))" { Get-ChildItem $libdir.DirectoryName -Filter 'Foundation*.lib' | ForEach-Object { "$($_.Name) $($_.Length)" } }
   foreach ($lib in 'Foundation.lib', 'FoundationEssentials.lib', 'FoundationInternationalization.lib') {

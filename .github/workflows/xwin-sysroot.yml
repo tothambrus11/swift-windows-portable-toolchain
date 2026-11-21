@@ -24,6 +24,9 @@ jobs:
             arch: x64
           - runner: windows-11-arm
             arch: arm64
+          - runner: windows-latest
+            arch: x64
+            full: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -66,7 +69,7 @@ jobs:
         run: |
           . ./xwin/clean-env.ps1
           $t = Measure-Command {
-            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' | Out-Host
+            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' -Full:$('${{ matrix.full }}' -eq 'true') | Out-Host
           }
           if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
           "setup took $([math]::Round($t.TotalSeconds,1))s"
@@ -109,16 +112,22 @@ jobs:
           & ./xwin/optimize-probe.ps1
 
       - name: Non-admin setup + build (PsExec -l restricted token)
-        if: always() && matrix.arch == 'x64'
+        if: always() && matrix.arch == 'x64' && !matrix.full
         continue-on-error: true
         run: |
           $ps = "$env:RUNNER_TEMP\pstools"
           New-Item -ItemType Directory -Force $ps | Out-Null
           curl.exe -sL -o "$ps\pstools.zip" https://download.sysinternals.com/files/PSTools.zip
           tar.exe -xf "$ps\pstools.zip" -C $ps
-          $log = "$env:RUNNER_TEMP\nonadmin.log"
+          # The restricted token has Administrators as deny-only, so it may not read D:\a\... (runner workspace):
+          # run from a copy in the user profile.
+          $home2 = "$env:USERPROFILE\nonadmin"
+          Remove-Item -Recurse -Force $home2 -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $home2 | Out-Null
+          Copy-Item -Recurse "$env:GITHUB_WORKSPACE\xwin" "$home2\xwin"
+          $log = "$home2\nonadmin.log"
           $t = Measure-Command {
-            & "$ps\PsExec64.exe" -accepteula -nobanner -l -w "$env:GITHUB_WORKSPACE" "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\xwin\nonadmin-check.ps1" -Root "$env:LOCALAPPDATA\swift-np" -Log $log
+            & "$ps\PsExec64.exe" -accepteula -nobanner -l -w $home2 "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "$home2\xwin\nonadmin-check.ps1" -Root "$env:LOCALAPPDATA\swift-np" -Log $log
           }
           $code = $LASTEXITCODE
           Get-Content $log -ErrorAction SilentlyContinue
@@ -128,7 +137,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-${{ matrix.arch }}
+          name: results-${{ matrix.arch }}${{ matrix.full && '-full' || '' }}
           path: out/
 
   control-with-vs:

@@ -457,8 +457,11 @@ foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
   Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value @(
     '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
     '-fuse-ld=lld',
-    # NB: backslash is an escape character in clang config files -> use forward slashes
-    "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '/'))`"")
+    # Swift links the DLL CRT (/MD); make plain C/C++ compiles do the same (clang's default /MT needs the static CRT)
+    '-fms-runtime-lib=dll',
+    # NB: backslash is an escape character in clang config files -> double it. Do NOT use forward slashes:
+    # a forward-slash sysroot crashes swift-frontend's VFS overlay ("Paths should not contain traversal components").
+    "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '\\'))`"")
 }
 
 # ---------------------------------------------------------------- activation scripts

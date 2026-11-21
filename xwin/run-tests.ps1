@@ -42,6 +42,17 @@ function Run([string]$exe) {
 }
 
 Invoke-Case 'info' { Run swift --version; Run where.exe swift clang lld-link; where.exe cl link vswhere 2>$null; Get-ChildItem env: | Where-Object Name -match '^(INCLUDE|LIB|SDKROOT|VC|Windows|UCRT|Universal)' | Format-Table -AutoSize | Out-String -Width 400; Get-Content (Join-Path (Split-Path (Get-Command clang).Source) 'clang.cfg') } ''
+Invoke-Case 'diag-sxs' {
+  $bin = Split-Path (Get-Command swift).Source
+  foreach ($exe in 'swift.exe', 'swift-build.exe', 'swift-test.exe', 'swift-frontend.exe') {
+    $s = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes((Join-Path $bin $exe)))
+    $m = [regex]::Match($s, '<assembly[\s\S]*?</assembly>')
+    "--- $exe manifest dependencies:"
+    [regex]::Matches($m.Value, '<dependentAssembly>[\s\S]*?name="([^"]+)"') | ForEach-Object { '    ' + $_.Groups[1].Value }
+  }
+  '--- assembly dirs in usr\bin:'
+  Get-ChildItem $bin -Directory | ForEach-Object { '    ' + $_.Name + ' : ' + ((Get-ChildItem $_.FullName -File | ForEach-Object Name) -join ', ') }
+} ''
 $plat = Split-Path (Split-Path (Split-Path $env:SDKROOT.TrimEnd('\'))) # ...\Windows.platform
 Invoke-Case 'diag-platform' { Get-Content "$plat\Info.plist"; Get-ChildItem "$plat\Developer\Library" -Recurse -Depth 2 -Directory | ForEach-Object FullName } ''
 
@@ -56,8 +67,8 @@ $SdkFlags = @('-windows-sdk-root', $kits, '-windows-sdk-version', $sdkVer, '-vis
 Invoke-Case 'a-hello-swiftc' { Run swiftc hello.swift -o hello.exe; Run .\hello.exe } 'Hello from portable Swift!'
 Invoke-Case 'b-foundation-swiftc' { Run swiftc foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'
 Invoke-Case 'b2-foundation-swiftc-O' { Run swiftc -O foundation.swift -o foundation-o.exe; Run .\foundation-o.exe } 'FOUNDATION OK'
-Invoke-Case 'b3-foundation-swiftc-O-nocmo' { Run swiftc -O -Xfrontend -disable-cmo foundation.swift -o foundation-o2.exe; Run .oundation-o2.exe } 'FOUNDATION OK'
-Invoke-Case 'b4-foundation-swiftc-Osize' { Run swiftc -Osize foundation.swift -o foundation-os.exe; Run .oundation-os.exe } 'FOUNDATION OK'
+Invoke-Case 'b3-foundation-swiftc-O-nocmo' { Run swiftc -O -Xfrontend -disable-cmo foundation.swift -o foundation-o2.exe; Run .\foundation-o2.exe } 'FOUNDATION OK'
+Invoke-Case 'b4-foundation-swiftc-Osize' { Run swiftc -Osize foundation.swift -o foundation-os.exe; Run .\foundation-os.exe } 'FOUNDATION OK'
 Invoke-Case 'c-winsdk-swiftc' { Run swiftc winsdk.swift -o winsdk.exe; Run .\winsdk.exe } 'WINSDK OK'
 
 Push-Location swiftpkg
@@ -106,7 +117,7 @@ Set-Cfg @('-fuse-ld=lld')
 Invoke-Case 'v1-flags-modulemaps-cfg-lld-only' { Run swiftc @SdkFlags winsdk.swift -o v1.exe; Run .\v1.exe } 'WINSDK OK'
 Hide-Modulemaps
 Invoke-Case 'v2-flags-no-modulemaps-cfg-lld-only' { Run swiftc @SdkFlags winsdk.swift -o v2.exe; Run .\v2.exe } 'WINSDK OK'
-Restore-Cfg
+Set-Cfg @('-fuse-ld=lld', "-Xmicrosoft-windows-sys-root `"$sysFwd`"")
 Invoke-Case 'v3-flags-no-modulemaps-cfg-sysroot-fwd' { Run swiftc @SdkFlags winsdk.swift -o v3.exe; Run .\v3.exe } 'WINSDK OK'
 Set-Cfg @('-fuse-ld=lld', "-Xmicrosoft-windows-sys-root `"$sysEsc`"")
 Invoke-Case 'v4-flags-no-modulemaps-cfg-sysroot-backslash' { Run swiftc @SdkFlags winsdk.swift -o v4.exe; Run .\v4.exe } 'WINSDK OK'
@@ -115,7 +126,12 @@ Invoke-Case 'v5-flags-modulemaps-cfg-sysroot-backslash' { Run swiftc @SdkFlags w
 Restore-Cfg
 $SdkFlagsFwd = @('-windows-sdk-root', $kits.Replace('\', '/'), '-windows-sdk-version', $sdkVer, '-visualc-tools-root', $vcTools.Replace('\', '/'), '-visualc-tools-version', $vcVer)
 Invoke-Case 'v6-fwdslash-flags-modulemaps-cfg' { Run swiftc @SdkFlagsFwd winsdk.swift -o v6.exe; Run .\v6.exe } 'WINSDK OK'
-Invoke-Case 'v7-flags-modulemaps-cfg-repro-crash' { Run swiftc @SdkFlags winsdk.swift -o v7.exe } 'WINSDK OK'
+Invoke-Case 'v7-flags-default-setup' { Run swiftc @SdkFlags foundation.swift -o v7.exe; Run .\v7.exe } 'FOUNDATION OK'
+# minimal crash repro without any cfg: plain forward-slash -Xcc header search path + -windows-sdk-root
+Set-Cfg @('-fuse-ld=lld')
+Invoke-Case 'v8-crash-repro-Xcc-isystem-fwdslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$($kits.Replace('\', '/'))/Include/$sdkVer/ucrt" winsdk.swift -o v8.exe } 'never'
+Invoke-Case 'v9-crash-repro-Xcc-isystem-backslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$kits\Include\$sdkVer\ucrt" winsdk.swift -o v9.exe; Run .\v9.exe } 'WINSDK OK'
+Restore-Cfg
 
 # ---- alternative to copying modulemaps: a VFS overlay referenced from clang.cfg
 Hide-Modulemaps
@@ -129,7 +145,7 @@ $roots = @(); foreach ($dir in $map.Keys) {
 }
 $overlay = Join-Path $Root 'winsdk-overlay.yaml'
 @{ version = 0; 'case-sensitive' = 'false'; roots = $roots } | ConvertTo-Json -Depth 6 | Set-Content -Path $overlay -Encoding ASCII
-Set-Cfg @('-fuse-ld=lld', "-Xmicrosoft-windows-sys-root `"$sysFwd`"", "-ivfsoverlay `"$($overlay.Replace('\', '/'))`"")
+Set-Cfg @('-fuse-ld=lld', '-fms-runtime-lib=dll', "-Xmicrosoft-windows-sys-root `"$sysEsc`"", "-ivfsoverlay `"$($overlay.Replace('\', '\\'))`"")
 Invoke-Case 'w1-cfg-vfsoverlay-foundation-swiftc' { Run swiftc foundation.swift -o w1.exe; Run .\w1.exe } 'FOUNDATION OK'
 Invoke-Case 'w2-cfg-vfsoverlay-winsdk-swiftc' { Run swiftc winsdk.swift -o w2.exe; Run .\w2.exe } 'WINSDK OK'
 Push-Location swiftpkg
