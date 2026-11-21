@@ -7,8 +7,13 @@
      unpacks its MSIs with `/layout` and extracts them with an administrative
      install (`msiexec /a`) - no real install, no registry, no VS dependency.
   2. Downloads xwin (https://github.com/Jake-Shadle/xwin) and uses it to fetch the
-     MSVC CRT + Windows SDK headers/libs directly from Microsoft's package
-     manifests, splatted in the /winsysroot layout.
+     MSVC CRT directly from Microsoft's VS package manifests (/winsysroot layout).
+     The Windows SDK comes by default from Microsoft's official NuGet packages
+     (Microsoft.Windows.SDK.CPP[.<arch>]) because xwin's SDK splat lacks e.g.
+     ucrt\corecrt_math.h, which Swift's ucrt.modulemap needs.
+  2b. Copies Swift's ucrt/winsdk/vcruntime modulemaps next to the headers and
+     writes <toolchain>\usr\bin\clang.cfg (-fuse-ld=lld, -Xmicrosoft-windows-sys-root)
+     so swiftc, SwiftPM (incl. swift test) and clang need no extra flags.
   3. Writes <Target>\activate.ps1 and <Target>\activate.bat which set up PATH,
      SDKROOT and the vcvars-style variables (INCLUDE, LIB, VCToolsInstallDir,
      UniversalCRTSdkDir, UCRTVersion, ...) so that `swift build` works in a
