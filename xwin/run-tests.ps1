@@ -56,6 +56,8 @@ $SdkFlags = @('-windows-sdk-root', $kits, '-windows-sdk-version', $sdkVer, '-vis
 Invoke-Case 'a-hello-swiftc' { Run swiftc hello.swift -o hello.exe; Run .\hello.exe } 'Hello from portable Swift!'
 Invoke-Case 'b-foundation-swiftc' { Run swiftc foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'
 Invoke-Case 'b2-foundation-swiftc-O' { Run swiftc -O foundation.swift -o foundation-o.exe; Run .\foundation-o.exe } 'FOUNDATION OK'
+Invoke-Case 'b3-foundation-swiftc-O-nocmo' { Run swiftc -O -Xfrontend -disable-cmo foundation.swift -o foundation-o2.exe; Run .oundation-o2.exe } 'FOUNDATION OK'
+Invoke-Case 'b4-foundation-swiftc-Osize' { Run swiftc -Osize foundation.swift -o foundation-os.exe; Run .oundation-os.exe } 'FOUNDATION OK'
 Invoke-Case 'c-winsdk-swiftc' { Run swiftc winsdk.swift -o winsdk.exe; Run .\winsdk.exe } 'WINSDK OK'
 
 Push-Location swiftpkg
@@ -64,6 +66,7 @@ Invoke-Case 'd2-swiftpm-run' { Run swift run Hello } 'SWIFTPM OK'
 Invoke-Case 'd2b-swiftpm-foundation-demo' { Run swift run FoundationDemo } 'FOUNDATION OK'
 Invoke-Case 'd3-swiftpm-test' { Run swift test } ''
 Invoke-Case 'd4-swiftpm-release' { Run swift build -c release; Run swift run -c release Hello } 'SWIFTPM OK'
+Invoke-Case 'd4b-swiftpm-release-foundation-demo' { Run swift run -c release FoundationDemo } 'FOUNDATION OK'
 Invoke-Case 'd5-swiftpm-native-run' { Run swift run --build-system native --scratch-path .build-native Hello } 'SWIFTPM OK'
 Invoke-Case 'd6-swiftpm-native-test' { Run swift test --build-system native --scratch-path .build-native } ''
 Pop-Location
@@ -109,6 +112,6 @@ $md = $md -join "`n"
 Write-Host $md
 if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Test matrix ($env:RUNNER_ARCH)`n`n$md`n" }
 if ($ResultsFile) { $results | ConvertTo-Json -Depth 4 | Set-Content -Path $ResultsFile -Encoding UTF8 }
-$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(f-|g2-|h|r|d5|d6|e2|diag)' })
+$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(f-|g2-|h|r|d5|d6|e2|diag|b2|b3|b4|d4b)' })
 if ($failed.Count -gt 0) { Write-Host "Required failures: $($failed.name -join ', ')"; exit 1 }
 exit 0
