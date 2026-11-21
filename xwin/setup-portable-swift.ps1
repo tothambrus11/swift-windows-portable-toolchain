@@ -239,7 +239,7 @@ foreach ($m in $msis) {
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
-$swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\Toolchains\[^\]+\usr\bin\swift\.exe$' } | Select-Object -First 1
+$swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
 if (-not $swiftExe) { throw "swift.exe not found under $swiftRoot" }
 $toolchainBin = $swiftExe.DirectoryName
 $runtimeBin = Join-Path $swiftRoot "Runtimes\$SwiftVersion\usr\bin"
