@@ -349,10 +349,22 @@ if (-not $KeepDownloads) {
 # the `ucrt`, `WinSDK`, `vcruntime` modules through the INCLUDE search path alone.
 if (-not $NoModulemapCopy) {
   $share = Join-Path $sdkRoot 'usr\share'
-  Copy-Item (Join-Path $share 'ucrt.modulemap')      "$kits\Include\$sdkVer\ucrt\module.modulemap" -Force
-  Copy-Item (Join-Path $share 'winsdk.modulemap')    "$kits\Include\$sdkVer\um\module.modulemap" -Force
-  Copy-Item (Join-Path $share 'vcruntime.modulemap') "$($vcRoot.FullName)\include\module.modulemap" -Force
-  Copy-Item (Join-Path $share 'vcruntime.apinotes')  "$($vcRoot.FullName)\include\vcruntime.apinotes" -Force
+  $inc = "$kits\Include\$sdkVer"
+  foreach ($f in Get-ChildItem $share -File | Where-Object { $_.Extension -in '.modulemap', '.apinotes' }) {
+    $n = $f.Name.ToLowerInvariant()
+    $dest = switch -regex ($n) {
+      '^ucrt\.modulemap$'          { "$inc\ucrt\module.modulemap" }
+      '^ucrt\.apinotes$'           { "$inc\ucrt\ucrt.apinotes" }
+      '^vcruntime\.modulemap$'     { "$($vcRoot.FullName)\include\module.modulemap" }
+      '^vcruntime\.apinotes$'      { "$($vcRoot.FullName)\include\vcruntime.apinotes" }
+      '^winsdk\.modulemap$'        { "$inc\um\module.modulemap" }
+      '^winsdk_(\w+)\.modulemap$'  { "$inc\$($Matches[1])\module.modulemap" }
+      '^winsdk\.apinotes$'         { "$inc\um\WinSDK.apinotes" }
+      default                      { $null }
+    }
+    if ($dest -and (Test-Path (Split-Path $dest))) { Copy-Item $f.FullName $dest -Force; Write-Host "    $($f.Name) -> $dest" }
+    else { Write-Host "    (not placed) $($f.Name)" }
+  }
 }
 
 # ---------------------------------------------------------------- clang default config

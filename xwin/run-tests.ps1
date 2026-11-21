@@ -88,7 +88,8 @@ Invoke-Case 'h-flags-foundation-swiftc' { Run swiftc @SdkFlags foundation.swift 
 Invoke-Case 'h2-flags-winsdk-swiftc' { Run swiftc @SdkFlags winsdk.swift -o winsdk-f.exe; Run .\winsdk-f.exe } 'WINSDK OK'
 
 # ---- registry variant (needs admin): hide the physical modulemaps, register the kit in HKLM (32-bit view, as LLVM reads it)
-$mm = @("$kits\Include\$sdkVer\ucrt\module.modulemap", "$kits\Include\$sdkVer\um\module.modulemap", "$vcTools\include\module.modulemap")
+$mm = @(Get-ChildItem $sysroot -Recurse -Filter module.modulemap | ForEach-Object FullName)
+Write-Host "physical modulemaps: $($mm -join ', ')"
 foreach ($m in $mm) { Rename-Item $m 'module.modulemap.off' }
 $regKeys = @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots', 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots')
 Invoke-Case 'r0-no-modulemaps-no-registry-foundation' { Run swiftc foundation.swift -o foundation-r0.exe; Run .\foundation-r0.exe } 'FOUNDATION OK'
