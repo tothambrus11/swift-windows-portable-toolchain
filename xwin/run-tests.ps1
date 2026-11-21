@@ -61,6 +61,7 @@ Invoke-Case 'c-winsdk-swiftc' { Run swiftc winsdk.swift -o winsdk.exe; Run .\win
 Push-Location swiftpkg
 Invoke-Case 'd1-swiftpm-build' { Run swift build } ''
 Invoke-Case 'd2-swiftpm-run' { Run swift run Hello } 'SWIFTPM OK'
+Invoke-Case 'd2b-swiftpm-foundation-demo' { Run swift run FoundationDemo } 'FOUNDATION OK'
 Invoke-Case 'd3-swiftpm-test' { Run swift test } ''
 Invoke-Case 'd4-swiftpm-release' { Run swift build -c release; Run swift run -c release Hello } 'SWIFTPM OK'
 Invoke-Case 'd5-swiftpm-native-run' { Run swift run --build-system native --scratch-path .build-native Hello } 'SWIFTPM OK'
@@ -84,7 +85,7 @@ Invoke-Case 'g2-clang-no-INCLUDE-LIB' {
   $env:INCLUDE = $i; $env:LIB = $l } 'clang ok'
 
 # ---- explicit flags variant (no reliance on INCLUDE for the frontend)
-Invoke-Case 'h-flags-foundation-swiftc' { Run swiftc @SdkFlags foundation.swift -o foundation-f.exe; Run .\foundation-f.exe } 'FOUNDATION OK'
+Invoke-Case 'h-flags-foundation-swiftc' { Run swiftc -v @SdkFlags foundation.swift -o foundation-f.exe; Run .\foundation-f.exe } 'FOUNDATION OK'
 Invoke-Case 'h2-flags-winsdk-swiftc' { Run swiftc @SdkFlags winsdk.swift -o winsdk-f.exe; Run .\winsdk-f.exe } 'WINSDK OK'
 
 # ---- registry variant (needs admin): hide the physical modulemaps, register the kit in HKLM (32-bit view, as LLVM reads it)

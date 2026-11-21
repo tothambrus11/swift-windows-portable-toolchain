@@ -12,13 +12,15 @@ let data = try enc.encode(items)
 let json = String(decoding: data, as: UTF8.self)
 print("JSON:", json)
 let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-precondition(try dec.decode([Item].self, from: data) == items)
+let decoded = try dec.decode([Item].self, from: data)
+precondition(decoded == items)
 
 // FileManager + URL + Data
 let fm = FileManager.default
 let url = fm.temporaryDirectory.appendingPathComponent("portable-swift-\(ProcessInfo.processInfo.processIdentifier).txt")
 try data.write(to: url)
-precondition(try Data(contentsOf: url) == data)
+let readBack = try Data(contentsOf: url)
+precondition(readBack == data)
 precondition(fm.fileExists(atPath: url.path))
 try fm.removeItem(at: url)
 let u = URL(string: "https://swift.org/install?platform=windows")!

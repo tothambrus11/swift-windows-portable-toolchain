@@ -6,6 +6,7 @@ let package = Package(
   targets: [
     .target(name: "HelloLib", path: "Sources/HelloLib"),
     .executableTarget(name: "Hello", dependencies: ["HelloLib"], path: "Sources/Hello"),
+    .executableTarget(name: "FoundationDemo", path: "Sources/FoundationDemo"),
     .testTarget(name: "HelloTests", dependencies: ["HelloLib"], path: "Tests/HelloTests"),
   ]
 )
