@@ -19,9 +19,10 @@ function Invoke-Case([string]$name, [scriptblock]$body, [string]$expect) {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $out = ''
   $ok = $true
+  $script:caseFailed = $false
   try {
     $out = & $body 2>&1 | ForEach-Object { "$_" } | Out-String
-    if ($LASTEXITCODE -ne 0) { $ok = $false }
+    if ($script:caseFailed) { $ok = $false }
     if ($expect -and ($out -notmatch [regex]::Escape($expect))) { $ok = $false }
   } catch { $ok = $false; $out += "`nEXCEPTION: $_" }
   Write-Host $out
@@ -29,12 +30,18 @@ function Invoke-Case([string]$name, [scriptblock]$body, [string]$expect) {
   $status = if ($ok) { 'PASS' } else { 'FAIL' }
   if (-not $ok) { Write-Host "::error title=$name::$name failed" }
   Write-Host ("[{0}] {1} ({2:n1}s)" -f $status, $name, $sw.Elapsed.TotalSeconds)
-  $tail = ($out -split "`n" | Select-Object -Last 25) -join "`n"
+  $tail = ($out -split "`n" | Select-Object -Last 40) -join "`n"
   [void]$results.Add([pscustomobject]@{ name = $name; status = $status; seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1); tail = $tail })
 }
-function Run([string]$exe) { & $exe @args; if ($LASTEXITCODE -ne 0) { throw "$exe exited with $LASTEXITCODE" } }
+# Runs a native command, streaming its output; on failure marks the case failed and skips the rest of it
+function Run([string]$exe) {
+  if ($script:caseFailed) { return }
+  "> $exe $($args -join ' ')"
+  & $exe @args 2>&1 | ForEach-Object { "$_" }
+  if ($LASTEXITCODE -ne 0) { "!! $exe exited with $LASTEXITCODE"; $script:caseFailed = $true }
+}
 
-Invoke-Case 'info' { swift --version; Run swiftc -print-target-info; where.exe swift clang lld-link; where.exe cl link vswhere 2>$null; $global:LASTEXITCODE = 0 } ''
+Invoke-Case 'info' { Run swift --version; Run where.exe swift clang lld-link; where.exe cl link vswhere 2>$null; Get-ChildItem env: | Where-Object Name -match '^(INCLUDE|LIB|SDKROOT|VC|Windows|UCRT|Universal)' | Format-Table -AutoSize | Out-String -Width 400 } ''
 
 Invoke-Case 'a-hello-swiftc' { Run swiftc hello.swift -o hello.exe; Run .\hello.exe } 'Hello from portable Swift!'
 Invoke-Case 'b-foundation' { Run swiftc foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'

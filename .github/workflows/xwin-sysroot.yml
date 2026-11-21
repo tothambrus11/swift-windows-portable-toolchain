@@ -63,6 +63,8 @@ jobs:
           }
           if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
           "setup took $([math]::Round($t.TotalSeconds,1))s"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item "$env:LOCALAPPDATAswift-portablesetup-stats.json","$env:LOCALAPPDATAswift-portablectivate.ps1" out/
           Get-Content "$env:LOCALAPPDATA\swift-portable\setup-stats.json"
           Get-Content "$env:LOCALAPPDATA\swift-portable\activate.ps1"
           "## Setup stats (${{ matrix.arch }})`n``````json`n$(Get-Content -Raw "$env:LOCALAPPDATA\swift-portable\setup-stats.json")`n``````" >> $env:GITHUB_STEP_SUMMARY
@@ -79,7 +81,7 @@ jobs:
 
       - name: Test matrix
         run: |
-          & ./xwin/run-tests.ps1 -Root "$env:LOCALAPPDATA\swift-portable" -ResultsFile "$env:RUNNER_TEMP\results-${{ matrix.arch }}.json"
+          & ./xwin/run-tests.ps1 -Root "$env:LOCALAPPDATA\swift-portable" -ResultsFile "$env:GITHUB_WORKSPACE\out\results-${{ matrix.arch }}.json"
 
       - name: Fresh-shell check (cmd + activate.bat)
         if: always()
@@ -96,7 +98,4 @@ jobs:
         if: always()
         with:
           name: results-${{ matrix.arch }}
-          path: |
-            ${{ runner.temp }}/results-*.json
-            ~/AppData/Local/swift-portable/setup-stats.json
-            ~/AppData/Local/swift-portable/activate.ps1
+          path: out/
