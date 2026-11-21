@@ -61,6 +61,86 @@ function Invoke-Download($url, $out) {
   if ($LASTEXITCODE -ne 0) { throw "download failed: $url" }
 }
 
+function Copy-StreamRange([System.IO.FileStream]$src, [long]$offset, [long]$length, [string]$dest) {
+  $src.Position = $offset
+  $out = [System.IO.File]::Create($dest)
+  try {
+    $buf = New-Object byte[] (4MB)
+    $left = $length
+    while ($left -gt 0) {
+      $n = $src.Read($buf, 0, [int][math]::Min($buf.Length, $left))
+      if ($n -le 0) { throw 'unexpected EOF' }
+      $out.Write($buf, 0, $n); $left -= $n
+    }
+  } finally { $out.Dispose() }
+}
+
+# Extracts the payloads of a WiX (v3-v6) Burn bundle without running it.
+# Layout: [engine stub (size = .wixburn header dwStubSize)][UX container CAB][attached container CAB(s)][signature]
+function Expand-BurnBundle([string]$Bundle, [string]$OutDir) {
+  $fs = [System.IO.File]::OpenRead($Bundle)
+  try {
+    $br = New-Object System.IO.BinaryReader($fs)
+    $fs.Position = 0x3C; $pe = $br.ReadInt32()
+    $fs.Position = $pe + 6; $nsec = $br.ReadUInt16()
+    $fs.Position = $pe + 20; $optSize = $br.ReadUInt16()
+    $secTable = $pe + 24 + $optSize
+    $burnRaw = $null
+    for ($i = 0; $i -lt $nsec; $i++) {
+      $fs.Position = $secTable + 40 * $i
+      $name = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(8)).TrimEnd([char]0)
+      if ($name -eq '.wixburn') { $fs.Position = $secTable + 40 * $i + 20; $burnRaw = $br.ReadUInt32() }
+    }
+    if ($null -eq $burnRaw) { throw "$Bundle is not a WiX Burn bundle (.wixburn section missing)" }
+    $fs.Position = $burnRaw
+    $magic = $br.ReadUInt32(); if ($magic -ne 0x00f14300) { throw ('bad burn magic 0x{0:x}' -f $magic) }
+    $fs.Position = $burnRaw + 24; $stub = [long]$br.ReadUInt32()
+    $off = $stub; $idx = 0; $cabs = @()
+    while ($off + 36 -lt $fs.Length) {
+      $fs.Position = $off
+      $sig = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
+      if ($sig -ne 'MSCF') { break }
+      $fs.Position = $off + 8; $size = [long]$br.ReadUInt32()
+      $cab = Join-Path $OutDir ("container{0}.cab" -f $idx)
+      Write-Host ("    container {0}: offset {1}, {2:n1} MB" -f $idx, $off, ($size / 1MB))
+      Copy-StreamRange $fs $off $size $cab
+      $cabs += $cab; $off += $size; $idx++
+    }
+  } finally { $fs.Dispose() }
+  if ($cabs.Count -lt 2) { throw "expected UX + attached containers, found $($cabs.Count)" }
+  $skip = @{}
+  $i = 0
+  foreach ($cab in $cabs) {
+    $d = Join-Path $OutDir ("c$i"); New-Item -ItemType Directory -Force -Path $d | Out-Null
+    if ($skip[$i]) { Write-Host "    skipping container $i ($($skip[$i]))"; Remove-Item $cab -Force; $i++; continue }
+    & tar.exe -xf $cab -C $d
+    if ($LASTEXITCODE -ne 0) { & expand.exe -F:* $cab $d | Out-Null; if ($LASTEXITCODE -ne 0) { throw "failed to extract $cab" } }
+    Remove-Item $cab -Force
+    if ($i -eq 0) {
+      # The non-asserts toolchain is an alternative copy of the toolchain - don't unpack it
+      [xml]$m0 = Get-Content -Raw -Path (Join-Path $d '0')
+      foreach ($c in $m0.GetElementsByTagName('Container')) {
+        if ($c.GetAttribute('Id') -match 'NoAsserts' -and -not $AllSdks) { $skip[[int]$c.GetAttribute('AttachedIndex')] = $c.GetAttribute('Id') }
+      }
+    }
+    $i++
+  }
+  # UX container file "0" is the burn manifest; map payload SourcePath (a0, a1, ...) -> FilePath
+  [xml]$manifest = Get-Content -Raw -Path (Join-Path $OutDir 'c0\0')
+  foreach ($pl in $manifest.GetElementsByTagName('Payload')) {
+    $srcPath = $pl.GetAttribute('SourcePath'); $filePath = $pl.GetAttribute('FilePath')
+    if (-not $srcPath -or -not $filePath) { continue }
+    for ($c = 1; $c -lt $cabs.Count; $c++) {
+      $f = Join-Path $OutDir "c$c\$srcPath"
+      if (Test-Path $f) {
+        $dest = Join-Path $OutDir "payloads\$filePath"
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+        Move-Item -Force $f $dest
+      }
+    }
+  }
+}
+
 if (-not $Arch) {
   $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'arm64' } else { 'x64' }
 }
@@ -91,19 +171,18 @@ if (-not (Test-Path $installer)) {
 $stats.swift_download_mb = [math]::Round((Get-Item $installer).Length / 1MB, 1)
 $stats.swift_download_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
-Write-Step 'Unpacking installer bundle (/layout)'
+Write-Step 'Unpacking installer bundle (carving WiX Burn containers)'
 $t.Restart()
 $layout = Join-Path $dl 'layout'
 if (Test-Path $layout) { Remove-Item -Recurse -Force $layout }
-$p = Start-Process -FilePath $installer -ArgumentList @('/layout', "`"$layout`"", '/quiet', '/norestart', '/log', "`"$dl\layout.log`"") -Wait -PassThru
-if ($p.ExitCode -ne 0) { Get-Content "$dl\layout.log" -Tail 40 -ErrorAction SilentlyContinue; throw "bundle /layout failed: $($p.ExitCode)" }
+New-Item -ItemType Directory -Force -Path $layout | Out-Null
+# Note: `installer.exe /layout <dir>` only copies the bundle exe for this bundle, so we read
+# the Burn containers (plain CAB files appended after the engine stub) ourselves.
+Expand-BurnBundle -Bundle $installer -OutDir $layout
 $msis = Get-ChildItem -Path $layout -Recurse -Filter *.msi -ErrorAction SilentlyContinue
 if (-not $msis) {
-  Write-Host "    /layout exit code $($p.ExitCode), no MSIs. Layout dir contents:"
-  Get-ChildItem -Path $layout -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-  Get-ChildItem $dl | Format-Table -AutoSize | Out-String | Write-Host
-  Get-ChildItem $dl -Filter *.log | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 80 | Write-Host }
-  throw 'no MSIs found in bundle layout'
+  Get-ChildItem -Path $layout -Recurse | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+  throw 'no MSIs found in bundle'
 }
 Write-Host ('    MSIs: ' + (($msis | ForEach-Object { "$($_.Name) ($([math]::Round($_.Length/1MB))MB)" }) -join ', '))
 
@@ -112,7 +191,7 @@ if (Test-Path $swiftRoot) { Remove-Item -Recurse -Force $swiftRoot }
 New-Item -ItemType Directory -Force -Path $swiftRoot | Out-Null
 foreach ($m in $msis) {
   $n = $m.Name.ToLowerInvariant()
-  if (-not $AllSdks -and ($n -match 'android|wasm|wasi|static')) { Write-Host "    skip $($m.Name)"; continue }
+  if (-not $AllSdks -and ($n -match 'android|wasm|wasi|static|noasserts')) { Write-Host "    skip $($m.Name)"; continue }
   # Only the SDK/runtime MSIs for the requested arch (others are harmless but large)
   if ($n -match '^(sdk\.windows|rtl)\.(amd64|x64|x86|arm64|aarch64)') {
     $want = if ($Arch -eq 'arm64') { 'arm64|aarch64' } else { 'amd64|x64' }
