@@ -55,11 +55,18 @@ jobs:
           if ($bad) { $bad | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
           "OK: no cl/link/vswhere/clang on PATH, VS + Windows Kits hidden"
 
-      - name: Setup portable Swift (xwin sysroot)
+      - name: License gate refuses to run without -AcceptLicense
+        run: |
+          . ./xwin/clean-env.ps1
+          try { & ./xwin/setup-portable-swift.ps1 -Target "$env:RUNNER_TEMP\nolicense" | Out-Host; Write-Host '::error::setup ran without -AcceptLicense'; exit 1 }
+          catch { "OK, refused: $_" }
+          if (Test-Path "$env:RUNNER_TEMP\nolicense\Swift") { Write-Host '::error::downloaded without license acceptance'; exit 1 }
+
+      - name: Setup portable Swift (VS-manifest CRT + NuGet SDK)
         run: |
           . ./xwin/clean-env.ps1
           $t = Measure-Command {
-            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptMicrosoftLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' | Out-Host
+            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' | Out-Host
           }
           if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
           "setup took $([math]::Round($t.TotalSeconds,1))s"
@@ -72,11 +79,10 @@ jobs:
       - name: Layout overview
         run: |
           $r = "$env:LOCALAPPDATA\swift-portable"
-          Get-ChildItem $r\swift -Directory -Recurse -Depth 4 | Select-Object -ExpandProperty FullName
           Get-ChildItem $r\winsysroot -Directory -Recurse -Depth 5 | Select-Object -ExpandProperty FullName
-          foreach ($d in Get-ChildItem $r\winsysroot -Directory -Recurse -Depth 5) {
+          foreach ($d in Get-ChildItem $r -Directory -Recurse -Depth 7) {
             $s = (Get-ChildItem $d.FullName -Recurse -File | Measure-Object Length -Sum).Sum
-            if ($s -gt 20MB) { "{0,8:n0} MB  {1}" -f ($s/1MB), $d.FullName }
+            if ($s -gt 40MB) { "{0,8:n0} MB  {1}" -f ($s/1MB), $d.FullName }
           }
 
       - name: Test matrix
@@ -94,8 +100,60 @@ jobs:
           cd /d "%GITHUB_WORKSPACE%\xwin\tests\swiftpkg"
           swift build -c release && swift run -c release Hello
 
+      - name: Optimized-build probe (informational)
+        if: always()
+        continue-on-error: true
+        run: |
+          . ./xwin/clean-env.ps1
+          . "$env:LOCALAPPDATA\swift-portable\activate.ps1"
+          & ./xwin/optimize-probe.ps1
+
+      - name: Non-admin setup + build (PsExec -l restricted token)
+        if: always() && matrix.arch == 'x64'
+        continue-on-error: true
+        run: |
+          $ps = "$env:RUNNER_TEMP\pstools"
+          New-Item -ItemType Directory -Force $ps | Out-Null
+          curl.exe -sL -o "$ps\pstools.zip" https://download.sysinternals.com/files/PSTools.zip
+          tar.exe -xf "$ps\pstools.zip" -C $ps
+          $log = "$env:RUNNER_TEMP\nonadmin.log"
+          $t = Measure-Command {
+            & "$ps\PsExec64.exe" -accepteula -nobanner -l -w "$env:GITHUB_WORKSPACE" "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\xwin\nonadmin-check.ps1" -Root "$env:LOCALAPPDATA\swift-np" -Log $log
+          }
+          $code = $LASTEXITCODE
+          Get-Content $log -ErrorAction SilentlyContinue
+          "psexec exit code: $code, took $([math]::Round($t.TotalSeconds))s"
+          exit $code
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-${{ matrix.arch }}
           path: out/
+
+  control-with-vs:
+    # Control experiment: official installer on a runner WITH Visual Studio (nothing hidden)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift with the official installer (VS present)
+        run: |
+          $v = (Invoke-RestMethod https://www.swift.org/api/v1/install/releases.json)[-1].name
+          curl.exe -sL -o "$env:RUNNER_TEMP\swift.exe" "https://download.swift.org/swift-$v-release/windows10/swift-$v-RELEASE/swift-$v-RELEASE-windows10.exe"
+          $p = Start-Process "$env:RUNNER_TEMP\swift.exe" -ArgumentList '/quiet', '/norestart', '/log', "$env:RUNNER_TEMP\swift-install.log" -Wait -PassThru
+          "installer exit code $($p.ExitCode)"
+          $u = [Environment]::GetEnvironmentVariable('Path', 'User'); $m = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          "Path=$u;$m" >> $env:GITHUB_ENV
+          foreach ($n in 'SDKROOT') { $val = [Environment]::GetEnvironmentVariable($n, 'User'); if (-not $val) { $val = [Environment]::GetEnvironmentVariable($n, 'Machine') }; "$n=$val" >> $env:GITHUB_ENV }
+      - name: Optimized-build probe with VS present
+        run: |
+          swift --version
+          & ./xwin/optimize-probe.ps1
+      - name: SwiftPM release FoundationDemo with VS present
+        run: |
+          cd xwin/tests/swiftpkg
+          swift run -c release FoundationDemo

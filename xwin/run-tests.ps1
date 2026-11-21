@@ -91,6 +91,56 @@ Invoke-Case 'g2-clang-no-INCLUDE-LIB' {
 Invoke-Case 'h-flags-foundation-swiftc' { Run swiftc -v @SdkFlags foundation.swift -o foundation-f.exe; Run .\foundation-f.exe } 'FOUNDATION OK'
 Invoke-Case 'h2-flags-winsdk-swiftc' { Run swiftc @SdkFlags winsdk.swift -o winsdk-f.exe; Run .\winsdk-f.exe } 'WINSDK OK'
 
+# ---- VFS assertion investigation: which ingredient makes -windows-sdk-root & co. crash?
+$cfgFiles = @(Get-ChildItem (Split-Path (Get-Command clang).Source) -Filter 'clang*.cfg' | ForEach-Object FullName)
+$cfgSaved = @{}; foreach ($c in $cfgFiles) { $cfgSaved[$c] = Get-Content -Raw $c }
+$mmAll = @(Get-ChildItem $sysroot -Recurse -Filter module.modulemap | ForEach-Object FullName)
+function Hide-Modulemaps { foreach ($m in $mmAll) { Rename-Item $m 'module.modulemap.off' } }
+function Show-Modulemaps { foreach ($m in $mmAll) { Rename-Item "$m.off" 'module.modulemap' } }
+function Set-Cfg([string[]]$lines) { foreach ($c in $cfgFiles) { Set-Content -Path $c -Value $lines -Encoding ASCII } }
+function Restore-Cfg { foreach ($c in $cfgFiles) { Set-Content -Path $c -Value $cfgSaved[$c] -NoNewline -Encoding ASCII } }
+$sysFwd = $sysroot.Replace('\', '/')
+$sysEsc = $sysroot.Replace('\', '\\')
+
+Set-Cfg @('-fuse-ld=lld')
+Invoke-Case 'v1-flags-modulemaps-cfg-lld-only' { Run swiftc @SdkFlags winsdk.swift -o v1.exe; Run .\v1.exe } 'WINSDK OK'
+Hide-Modulemaps
+Invoke-Case 'v2-flags-no-modulemaps-cfg-lld-only' { Run swiftc @SdkFlags winsdk.swift -o v2.exe; Run .\v2.exe } 'WINSDK OK'
+Restore-Cfg
+Invoke-Case 'v3-flags-no-modulemaps-cfg-sysroot-fwd' { Run swiftc @SdkFlags winsdk.swift -o v3.exe; Run .\v3.exe } 'WINSDK OK'
+Set-Cfg @('-fuse-ld=lld', "-Xmicrosoft-windows-sys-root `"$sysEsc`"")
+Invoke-Case 'v4-flags-no-modulemaps-cfg-sysroot-backslash' { Run swiftc @SdkFlags winsdk.swift -o v4.exe; Run .\v4.exe } 'WINSDK OK'
+Show-Modulemaps
+Invoke-Case 'v5-flags-modulemaps-cfg-sysroot-backslash' { Run swiftc @SdkFlags winsdk.swift -o v5.exe; Run .\v5.exe } 'WINSDK OK'
+Restore-Cfg
+$SdkFlagsFwd = @('-windows-sdk-root', $kits.Replace('\', '/'), '-windows-sdk-version', $sdkVer, '-visualc-tools-root', $vcTools.Replace('\', '/'), '-visualc-tools-version', $vcVer)
+Invoke-Case 'v6-fwdslash-flags-modulemaps-cfg' { Run swiftc @SdkFlagsFwd winsdk.swift -o v6.exe; Run .\v6.exe } 'WINSDK OK'
+Invoke-Case 'v7-flags-modulemaps-cfg-repro-crash' { Run swiftc @SdkFlags winsdk.swift -o v7.exe } 'WINSDK OK'
+
+# ---- alternative to copying modulemaps: a VFS overlay referenced from clang.cfg
+Hide-Modulemaps
+$share = Join-Path $env:SDKROOT 'usr\share'
+$inc = "$kits\Include\$sdkVer"
+$map = [ordered]@{ "$inc\ucrt" = 'ucrt.modulemap'; "$inc\um" = 'winsdk_um.modulemap'; "$inc\shared" = 'winsdk_shared.modulemap'; "$vcTools\include" = 'vcruntime.modulemap' }
+$roots = @(); foreach ($dir in $map.Keys) {
+  $c = @(@{ name = 'module.modulemap'; type = 'file'; 'external-contents' = (Join-Path $share $map[$dir]) })
+  if ($map[$dir] -eq 'vcruntime.modulemap') { $c += @{ name = 'vcruntime.apinotes'; type = 'file'; 'external-contents' = (Join-Path $share 'vcruntime.apinotes') } }
+  $roots += @{ name = $dir; type = 'directory'; contents = $c }
+}
+$overlay = Join-Path $Root 'winsdk-overlay.yaml'
+@{ version = 0; 'case-sensitive' = 'false'; roots = $roots } | ConvertTo-Json -Depth 6 | Set-Content -Path $overlay -Encoding ASCII
+Set-Cfg @('-fuse-ld=lld', "-Xmicrosoft-windows-sys-root `"$sysFwd`"", "-ivfsoverlay `"$($overlay.Replace('\', '/'))`"")
+Invoke-Case 'w1-cfg-vfsoverlay-foundation-swiftc' { Run swiftc foundation.swift -o w1.exe; Run .\w1.exe } 'FOUNDATION OK'
+Invoke-Case 'w2-cfg-vfsoverlay-winsdk-swiftc' { Run swiftc winsdk.swift -o w2.exe; Run .\w2.exe } 'WINSDK OK'
+Push-Location swiftpkg
+Invoke-Case 'w3-cfg-vfsoverlay-swiftpm-test' { Run swift test --scratch-path .build-vfs } ''
+Pop-Location
+Push-Location cpkg
+Invoke-Case 'w4-cfg-vfsoverlay-swiftpm-c' { Run swift run --scratch-path .build-vfs CApp } 'CTARGET OK'
+Pop-Location
+Restore-Cfg
+Show-Modulemaps
+
 # ---- registry variant (needs admin): hide the physical modulemaps, register the kit in HKLM (32-bit view, as LLVM reads it)
 $mm = @(Get-ChildItem $sysroot -Recurse -Filter module.modulemap | ForEach-Object FullName)
 Write-Host "physical modulemaps: $($mm -join ', ')"
@@ -112,6 +162,6 @@ $md = $md -join "`n"
 Write-Host $md
 if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Test matrix ($env:RUNNER_ARCH)`n`n$md`n" }
 if ($ResultsFile) { $results | ConvertTo-Json -Depth 4 | Set-Content -Path $ResultsFile -Encoding UTF8 }
-$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(f-|g2-|h|r|d5|d6|e2|diag|b2|b3|b4|d4b)' })
+$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(g2-|h|r|v|w|diag|b2|b3|b4)' })
 if ($failed.Count -gt 0) { Write-Host "Required failures: $($failed.name -join ', ')"; exit 1 }
 exit 0

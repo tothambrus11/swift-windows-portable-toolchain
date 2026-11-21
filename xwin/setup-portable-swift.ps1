@@ -3,27 +3,24 @@
   Sets up a portable, VS-free Swift toolchain for Windows in a user-local folder.
 
 .DESCRIPTION
-  1. Downloads the official swift.org Windows installer (a WiX/Burn bundle),
-     unpacks its MSIs with `/layout` and extracts them with an administrative
-     install (`msiexec /a`) - no real install, no registry, no VS dependency.
-  2. Downloads xwin (https://github.com/Jake-Shadle/xwin) and uses it to fetch the
-     MSVC CRT directly from Microsoft's VS package manifests (/winsysroot layout).
-     The Windows SDK comes by default from Microsoft's official NuGet packages
-     (Microsoft.Windows.SDK.CPP[.<arch>]) because xwin's SDK splat lacks e.g.
-     ucrt\corecrt_math.h, which Swift's ucrt.modulemap needs.
-  2b. Copies Swift's ucrt/winsdk/vcruntime modulemaps next to the headers and
-     writes <toolchain>\usr\bin\clang.cfg (-fuse-ld=lld, -Xmicrosoft-windows-sys-root)
-     so swiftc, SwiftPM (incl. swift test) and clang need no extra flags.
-  3. Writes <Target>\activate.ps1 and <Target>\activate.bat which set up PATH,
-     SDKROOT and the vcvars-style variables (INCLUDE, LIB, VCToolsInstallDir,
-     UniversalCRTSdkDir, UCRTVersion, ...) so that `swift build` works in a
-     fresh shell without Visual Studio.
+  1. Downloads the official swift.org Windows installer (a WiX/Burn bundle), carves
+     its CAB containers out (no installer run) and extracts only the needed MSIs with
+     an administrative install (`msiexec /a`) - no registry, no VS dependency.
+  2. Fetches the MSVC CRT (headers + DLL import libs only, ~30 MB) straight from the
+     Visual Studio channel manifest - pure PowerShell, no xwin/Rust binary needed
+     (optional: -CrtSource xwin).
+  3. Fetches the Windows SDK (headers + UCRT/UM import libs) from Microsoft's official
+     NuGet packages Microsoft.Windows.SDK.CPP[.<arch>].
+  4. Copies Swift's ucrt/winsdk/vcruntime modulemaps next to the headers and writes
+     <toolchain>\usr\bin\clang.cfg (-fuse-ld=lld, -Xmicrosoft-windows-sys-root) so that
+     swiftc, SwiftPM (incl. swift test) and clang need no extra flags.
+  5. Writes <Target>\activate.ps1 / activate.bat (PATH, SDKROOT, vcvars-style vars).
 
-  By using xwin you accept the Microsoft Visual Studio license terms
-  (https://go.microsoft.com/fwlink/?LinkId=2086102); pass -AcceptMicrosoftLicense.
+  The MSVC CRT and Windows SDK are Microsoft software under their license terms; the
+  script prints the license URLs and refuses to download them without -AcceptLicense.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File setup-portable-swift.ps1 -Target $env:LOCALAPPDATA\swift-portable -AcceptMicrosoftLicense
+  powershell -ExecutionPolicy Bypass -File setup-portable-swift.ps1 -Target $env:LOCALAPPDATA\swift-portable -AcceptLicense
   . $env:LOCALAPPDATA\swift-portable\activate.ps1
   swift build
 #>
@@ -34,19 +31,31 @@ param(
   [string]$SwiftVersion = '',
   # x64 or arm64; default = host architecture
   [ValidateSet('', 'x64', 'arm64')][string]$Arch = '',
-  [string]$XwinVersion = '0.10.0',
-  # Optional pinning of MSVC CRT / Windows SDK versions (passed to xwin)
+  # Installer components (MSI base names). Minimal set that builds/runs/tests: bld (compiler, clang, lld),
+  # cli (swift-driver, SwiftPM), rtl (runtime DLLs), windows (Windows platform SDK, XCTest, swift-testing).
+  [string[]]$Components = @('bld', 'cli', 'rtl', 'windows'),
+  # Also install lldb (dbg + python), sourcekit-lsp (ide) and res
+  [switch]$Full,
+  # Use the no-asserts toolchain build instead of the (default, installer-default) asserts build
+  [switch]$NoAsserts,
+  # Keep the Windows SDK content for the other architectures (x86/arm64/x64) and the redistributable .msm files
+  [switch]$KeepOtherArchs,
+  # MSVC CRT source: 'vsmanifest' (default, pure PowerShell) or 'xwin'
+  [ValidateSet('vsmanifest', 'xwin')][string]$CrtSource = 'vsmanifest',
+  [string]$VsChannelUrl = 'https://aka.ms/vs/17/release/channel',
+  # e.g. 14.44.17.14 (VS package version); default = newest in the channel manifest
   [string]$CrtVersion = '',
-  [string]$SdkVersion = '',
-  [switch]$IncludeDebugLibs,
-  # Where the Windows SDK half comes from: 'nuget' (official Microsoft.Windows.SDK.CPP packages, complete)
-  # or 'xwin' (VS manifest via xwin; its pruning drops headers such as ucrt\corecrt_math.h)
-  [ValidateSet('nuget', 'xwin')][string]$SdkSource = 'nuget',
+  # Also fetch the static CRT (libcmt/libcpmt/libvcruntime, +50 MB) - not needed by Swift (uses /MD)
+  [switch]$IncludeStaticCrt,
+  # Windows SDK NuGet version (e.g. 10.0.28000.2957) or prefix filter (-SdkVersion 10.0.26100)
   [string]$NugetSdkVersion = '',
+  [string]$SdkVersion = '',
+  [string]$XwinVersion = '0.10.0',
+  [switch]$IncludeDebugLibs,
   # Don't copy Swift's ucrt/winsdk/vcruntime modulemaps into the sysroot (then you need the -windows-sdk-root... flags)
   [switch]$NoModulemapCopy,
-  [switch]$AcceptMicrosoftLicense,
-  # Keep the downloaded installer / xwin cache (useful for CI caching)
+  [Alias('AcceptMicrosoftLicense')][switch]$AcceptLicense,
+  # Keep the downloaded installer / caches (useful for CI caching)
   [switch]$KeepDownloads,
   # Extract SDKs for Android etc. as well (skipped by default)
   [switch]$AllSdks
@@ -54,10 +63,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-
-if (-not $AcceptMicrosoftLicense) {
-  throw "xwin downloads Microsoft's CRT/SDK which are subject to the Visual Studio license (https://go.microsoft.com/fwlink/?LinkId=2086102). Re-run with -AcceptMicrosoftLicense."
-}
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Get-DirSizeMB($path) {
@@ -88,7 +93,7 @@ function Copy-StreamRange([System.IO.FileStream]$src, [long]$offset, [long]$leng
 
 # Extracts the payloads of a WiX (v3-v6) Burn bundle without running it.
 # Layout: [engine stub (size = .wixburn header dwStubSize)][UX container CAB][attached container CAB(s)][signature]
-function Expand-BurnBundle([string]$Bundle, [string]$OutDir) {
+function Expand-BurnBundle([string]$Bundle, [string]$OutDir, [string]$SkipContainer = 'NoAsserts') {
   $fs = [System.IO.File]::OpenRead($Bundle)
   try {
     $br = New-Object System.IO.BinaryReader($fs)
@@ -141,7 +146,7 @@ function Expand-BurnBundle([string]$Bundle, [string]$OutDir) {
       # The non-asserts toolchain is an alternative copy of the toolchain - don't unpack it
       [xml]$m0 = Get-Content -Raw -Path (Join-Path $d '0')
       foreach ($c in $m0.GetElementsByTagName('Container')) {
-        if ($c.GetAttribute('Id') -match 'NoAsserts' -and -not $AllSdks) { $skip[[int]$c.GetAttribute('AttachedIndex')] = $c.GetAttribute('Id') }
+        if ($c.GetAttribute('Id') -match $SkipContainer) { $skip[[int]$c.GetAttribute('AttachedIndex')] = $c.GetAttribute('Id') }
       }
     }
     $i++
@@ -166,19 +171,48 @@ if (-not $Arch) {
   $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'arm64' } else { 'x64' }
 }
 $xwinArch = if ($Arch -eq 'arm64') { 'aarch64' } else { 'x86_64' }
+$vsArch = if ($Arch -eq 'arm64') { 'ARM64' } else { 'x64' }
+if ($Full) { $Components = @($Components) + @('dbg', 'python', 'ide', 'res') | Select-Object -Unique }
 
 $Target = [System.IO.Path]::GetFullPath($Target)
 $dl = Join-Path $Target 'downloads'
 New-Item -ItemType Directory -Force -Path $Target, $dl | Out-Null
-$stats = [ordered]@{ arch = $Arch }
+$stats = [ordered]@{ arch = $Arch; components = ($Components -join ',') }
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-# ---------------------------------------------------------------- Swift
+# ---------------------------------------------------------------- versions + licenses (before any big download)
 if (-not $SwiftVersion) {
-  Write-Step 'Querying latest Swift release'
   $rel = Invoke-RestMethod -Uri 'https://www.swift.org/api/v1/install/releases.json'
   $SwiftVersion = $rel[-1].name
 }
+if (-not $NugetSdkVersion) {
+  $vers = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/index.json').versions | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
+  if ($SdkVersion) { $vers = @($vers | Where-Object { $_.StartsWith($SdkVersion) }) }
+  $NugetSdkVersion = @($vers)[-1]
+}
+$nuspec = [xml](Invoke-WebRequest -UseBasicParsing "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/$NugetSdkVersion/microsoft.windows.sdk.cpp.nuspec").Content
+$sdkLicense = $nuspec.package.metadata.licenseUrl
+if (-not $sdkLicense) { $sdkLicense = "https://www.nuget.org/packages/Microsoft.Windows.SDK.CPP/$NugetSdkVersion/License" }
+$vsLicense = 'https://go.microsoft.com/fwlink/?LinkId=2086102'
+$channel = $null
+if ($CrtSource -eq 'vsmanifest') {
+  $channel = Invoke-RestMethod -Uri $VsChannelUrl
+  $bt = $channel.channelItems | Where-Object { $_.id -eq 'Microsoft.VisualStudio.Product.BuildTools' } | Select-Object -First 1
+  $lr = $bt.localizedResources | Where-Object { $_.language -eq 'en-us' } | Select-Object -First 1
+  if ($lr -and $lr.license) { $vsLicense = $lr.license }
+}
+Write-Host ''
+Write-Host 'This script downloads third-party software under these licenses:'
+Write-Host "  - Swift $SwiftVersion (swift.org, Apache 2.0 with Runtime Library Exception): https://swift.org/LICENSE.txt"
+Write-Host "  - Microsoft Visual C++ runtime headers/libraries (from the Visual Studio Build Tools channel): $vsLicense"
+Write-Host "  - Microsoft Windows SDK $NugetSdkVersion (NuGet Microsoft.Windows.SDK.CPP): $sdkLicense"
+Write-Host ''
+if (-not $AcceptLicense) {
+  throw 'You must review and accept the license terms above: re-run with -AcceptLicense.'
+}
+$stats.licenses = [ordered]@{ swift = 'https://swift.org/LICENSE.txt'; msvc = $vsLicense; winsdk = $sdkLicense }
+
+# ---------------------------------------------------------------- Swift
 $stats.swift_version = $SwiftVersion
 $suffix = if ($Arch -eq 'arm64') { '-arm64' } else { '' }
 $swiftUrl = "https://download.swift.org/swift-$SwiftVersion-release/windows10$suffix/swift-$SwiftVersion-RELEASE/swift-$SwiftVersion-RELEASE-windows10$suffix.exe"
@@ -197,29 +231,30 @@ $t.Restart()
 $layout = Join-Path $dl 'layout'
 if (Test-Path $layout) { Remove-Item -Recurse -Force $layout }
 New-Item -ItemType Directory -Force -Path $layout | Out-Null
-# Note: `installer.exe /layout <dir>` only copies the bundle exe for this bundle, so we read
-# the Burn containers (plain CAB files appended after the engine stub) ourselves.
-Expand-BurnBundle -Bundle $installer -OutDir $layout
+# `installer.exe /layout <dir>` only copies the bundle exe for this bundle, so read the Burn containers
+# (plain CAB files appended after the engine stub) ourselves. Skip the unused toolchain flavour.
+$skipRx = if ($NoAsserts) { '^AssertsToolchainContainer$' } else { 'NoAsserts' }
+Expand-BurnBundle -Bundle $installer -OutDir $layout -SkipContainer $skipRx
+if (-not $KeepDownloads) { Remove-Item -Force $installer }
 $msis = Get-ChildItem -Path $layout -Recurse -Filter *.msi -ErrorAction SilentlyContinue
-if (-not $msis) {
-  Get-ChildItem -Path $layout -Recurse | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-  throw 'no MSIs found in bundle'
-}
-Write-Host ('    MSIs: ' + (($msis | ForEach-Object { "$($_.Name) ($([math]::Round($_.Length/1MB))MB)" }) -join ', '))
+if (-not $msis) { throw 'no MSIs found in bundle' }
+Write-Host ('    MSIs: ' + (($msis | ForEach-Object Name) -join ', '))
 
 $swiftRoot = Join-Path $Target 'Swift'   # will contain Toolchains\, Platforms\, Runtimes\ like %LOCALAPPDATA%\Programs\Swift
 $stage = Join-Path $Target '_'   # keep this short: admin images hit MAX_PATH (error 1603) otherwise
 foreach ($d in @($swiftRoot, $stage)) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
 New-Item -ItemType Directory -Force -Path $swiftRoot, $stage | Out-Null
+$msiSizes = [ordered]@{}
+$msiIdx = 0
 foreach ($m in $msis) {
   $n = $m.Name.ToLowerInvariant()
-  if (-not $AllSdks -and ($n -match 'android|wasm|wasi|static|noasserts')) { Write-Host "    skip $($m.Name)"; continue }
-  # Only the runtime MSI for the requested arch
-  if ($n -match '^rtl\.(amd64|x64|x86|arm64|aarch64)') {
-    $want = if ($Arch -eq 'arm64') { 'arm64|aarch64' } else { 'amd64|x64' }
-    if ($n -notmatch $want) { Write-Host "    skip $($m.Name)"; continue }
-  }
-  $msiIdx = 1 + [int]$msiIdx
+  $comp = ($n -split '\.')[0]          # bld.asserts.msi -> bld, rtl.amd64.msi -> rtl, windows.msi -> windows
+  $flavourOk = if ($NoAsserts) { $n -notmatch '\.asserts\.' } else { $n -notmatch '\.noasserts\.' }
+  $archOk = $true
+  if ($comp -eq 'rtl') { $archOk = $n -match $(if ($Arch -eq 'arm64') { 'arm64|aarch64' } else { 'amd64|x64' }) }
+  $wanted = ($Components -contains $comp) -or ($AllSdks -and $comp -eq 'android')
+  if (-not ($wanted -and $flavourOk -and $archOk)) { Write-Host "    skip $($m.Name)"; continue }
+  $msiIdx++
   $s = Join-Path $stage "$msiIdx"
   Write-Host "    msiexec /a $($m.Name)"
   $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$s`"", '/L*v', "`"$dl\$($m.BaseName).admin.log`"") -Wait -PassThru
@@ -228,6 +263,7 @@ foreach ($m in $msis) {
     throw "msiexec /a $($m.Name) failed: $($p.ExitCode)"
   }
   Get-ChildItem -Path $s -Filter *.msi | Remove-Item -Force   # admin image keeps a copy of the .msi at its root
+  $msiSizes[$m.Name] = Get-DirSizeMB $s
   # Per-user MSIs land under <TARGETDIR>\LocalApp\Programs\Swift; merge that into $swiftRoot
   $perUser = Join-Path $s 'LocalApp\Programs\Swift'
   if (Test-Path $perUser) {
@@ -238,16 +274,17 @@ foreach ($m in $msis) {
   # The runtime MSI's files land directly in TARGETDIR: give them the standard Runtimes\<ver>\usr\bin home
   $left = @(Get-ChildItem -Path $s -Force)
   if ($left.Count -gt 0) {
-    if ($n -match '^rtl\.') {
+    if ($comp -eq 'rtl') {
       $rt = Join-Path $swiftRoot "Runtimes\$SwiftVersion\usr\bin"
       New-Item -ItemType Directory -Force -Path $rt | Out-Null
       & robocopy.exe $s $rt /E /MOVE /NFL /NDL /NJH /NJS /NP | Out-Null
     } else {
-      Write-Host "      note: $($m.Name) also produced: $(($left | ForEach-Object Name) -join ', ') (kept under $s)"
+      Write-Host "      note: $($m.Name) also produced: $(($left | ForEach-Object Name) -join ', ') (ignored)"
     }
   }
 }
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+$stats.msi_sizes_mb = $msiSizes
 $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
 $swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
@@ -261,75 +298,115 @@ if (-not (Test-Path (Join-Path $runtimeBin 'swiftCore.dll')) -or -not $platform)
 }
 $sdkRoot = Join-Path $platform.FullName 'Developer\SDKs\Windows.sdk'
 foreach ($x in @($toolchainBin, $runtimeBin, $sdkRoot)) { if (-not $x -or -not (Test-Path $x)) { throw "expected path missing: $x" } }
+$stats.swift_disk_full_mb = Get-DirSizeMB $swiftRoot
+
+if (-not $KeepOtherArchs) {
+  # windows.msi carries the Swift SDK for x86, x64 and arm64; keep only the target architecture.
+  # Arch-specific dirs: usr\lib\swift[_static]\windows\<x86_64|aarch64|i686>, XCTest/Testing usr\bin32|bin64|bin64a,
+  # and <arch>-unknown-windows-msvc.swiftmodule/.swiftinterface/.swiftdoc files inside *.swiftmodule dirs.
+  $dropTriples = @('x86_64', 'aarch64', 'i686') | Where-Object { $_ -ne $xwinArch }
+  $dropBins = @('bin32', 'bin64', 'bin64a') | Where-Object { $_ -ne $(if ($Arch -eq 'arm64') { 'bin64a' } else { 'bin64' }) }
+  $plat = $platform.FullName
+  Get-ChildItem $plat -Recurse -Directory | Where-Object { ($dropTriples + $dropBins) -contains $_.Name } |
+    Sort-Object { $_.FullName.Length } -Descending | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+  Get-ChildItem $plat -Recurse -File | Where-Object { $nm = $_.Name; @($dropTriples | Where-Object { $nm.StartsWith("$_-unknown-windows-msvc") }).Count -gt 0 } |
+    Remove-Item -Force
+  # .msm merge modules are only needed to build installers that redistribute the runtime
+  Remove-Item -Recurse -Force (Join-Path $swiftRoot 'Redistributables') -ErrorAction SilentlyContinue
+}
 $stats.swift_disk_mb = Get-DirSizeMB $swiftRoot
 
-# ---------------------------------------------------------------- xwin
-Write-Step "Fetching MSVC CRT + Windows SDK with xwin $XwinVersion"
+# ---------------------------------------------------------------- MSVC CRT
+$sysroot = Join-Path $Target 'winsysroot'
+if (Test-Path $sysroot) { Remove-Item -Recurse -Force $sysroot }
+New-Item -ItemType Directory -Force -Path $sysroot | Out-Null
+$kits = Join-Path $sysroot 'Windows Kits\10'
 $t.Restart()
-$xwinDir = Join-Path $dl "xwin-$XwinVersion"
-$xwinExe = Join-Path $xwinDir "xwin-$XwinVersion-x86_64-pc-windows-msvc\xwin.exe"
-if (-not (Test-Path $xwinExe)) {
+if ($CrtSource -eq 'vsmanifest') {
+  Write-Step "Fetching MSVC CRT from the Visual Studio channel manifest ($VsChannelUrl)"
+  $item = $channel.channelItems | Where-Object { $_.id -eq 'Microsoft.VisualStudio.Manifests.VisualStudio' } | Select-Object -First 1
+  $vsman = Join-Path $dl 'VisualStudio.vsman'
+  Invoke-Download $item.payloads[0].url $vsman
+  # The manifest is ~30 MB of JSON; payload URLs end in <package id>.vsix, so a regex is enough (and works in PS 5.1)
+  $text = [System.IO.File]::ReadAllText($vsman).Replace('\/', '/')
+  $rxOpt = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+  if (-not $CrtVersion) {
+    $vers = [regex]::Matches($text, '/Microsoft\.VC\.(\d+\.\d+\.\d+\.\d+)\.CRT\.Headers\.base\.vsix"', $rxOpt) | ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Unique
+    $CrtVersion = "$(@($vers)[-1])"
+  }
+  $pkgs = @("Microsoft.VC.$CrtVersion.CRT.Headers.base", "Microsoft.VC.$CrtVersion.CRT.$vsArch.Store.base")
+  if ($IncludeStaticCrt) { $pkgs += "Microsoft.VC.$CrtVersion.CRT.$vsArch.Desktop.base" }
+  $crtBytes = 0
+  foreach ($id in $pkgs) {
+    $mt = [regex]::Match($text, '"(https://[^"]+/([0-9a-f]{64})/' + [regex]::Escape($id) + '\.vsix)"', $rxOpt)
+    if (-not $mt.Success) { throw "package $id not found in the VS manifest" }
+    $vsix = Join-Path $dl "$id.vsix"
+    Invoke-Download $mt.Groups[1].Value $vsix
+    $hash = (Get-FileHash -Algorithm SHA256 $vsix).Hash
+    if ($hash -ne $mt.Groups[2].Value.ToUpperInvariant()) { throw "sha256 mismatch for $id" }
+    $crtBytes += (Get-Item $vsix).Length
+    $x = Join-Path $dl "crt-$id"; New-Item -ItemType Directory -Force -Path $x | Out-Null
+    & tar.exe -xf $vsix -C $x 'Contents/VC'
+    if ($LASTEXITCODE -ne 0) { throw "failed to extract $id" }
+    & robocopy.exe (Join-Path $x 'Contents\VC') (Join-Path $sysroot 'VC') /E /MOVE /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed for $id" }
+  }
+  # Store.base also carries UWP/store variants that Swift never uses
+  Get-ChildItem (Join-Path $sysroot 'VC\Tools\MSVC') -Recurse -Directory | Where-Object { $_.Name -in 'store', 'uwp', 'enclave', 'onecore' } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  $stats.crt_source = 'vsmanifest'
+  $stats.crt_packages = $pkgs
+  $stats.crt_download_mb = [math]::Round($crtBytes / 1MB, 1)
+} else {
+  Write-Step "Fetching MSVC CRT with xwin $XwinVersion"
+  $xwinDir = Join-Path $dl "xwin-$XwinVersion"
+  $xwinExe = Join-Path $xwinDir "xwin-$XwinVersion-x86_64-pc-windows-msvc\xwin.exe"
   New-Item -ItemType Directory -Force -Path $xwinDir | Out-Null
   $tgz = Join-Path $xwinDir 'xwin.tar.gz'
   Invoke-Download "https://github.com/Jake-Shadle/xwin/releases/download/$XwinVersion/xwin-$XwinVersion-x86_64-pc-windows-msvc.tar.gz" $tgz
   & tar.exe -xzf $tgz -C $xwinDir
   if ($LASTEXITCODE -ne 0) { throw 'failed to extract xwin' }
+  $xcache = Join-Path $dl 'xwin-cache'
+  $xargs = @('--accept-license', '--arch', $xwinArch, '--cache-dir', $xcache)
+  if ($CrtVersion) { $xargs += @('--crt-version', $CrtVersion) }
+  $xargs += @('splat', '--output', (Join-Path $dl 'xwin-out'), '--use-winsysroot-style', '--preserve-ms-arch-notation', '--disable-symlinks')
+  if ($IncludeDebugLibs) { $xargs += '--include-debug-libs' }
+  & $xwinExe @xargs
+  if ($LASTEXITCODE -ne 0) { throw "xwin failed: $LASTEXITCODE" }
+  Move-Item (Join-Path $dl 'xwin-out\VC') (Join-Path $sysroot 'VC')   # its SDK half is incomplete (no corecrt_math.h): not used
+  $stats.crt_source = "xwin $XwinVersion"
+  $stats.crt_download_mb = Get-DirSizeMB (Join-Path $xcache 'dl')
 }
-$sysroot = Join-Path $Target 'winsysroot'
-$xcache = Join-Path $dl 'xwin-cache'
-if (Test-Path $sysroot) { Remove-Item -Recurse -Force $sysroot }
-$xargs = @('--accept-license', '--arch', $xwinArch, '--cache-dir', $xcache)
-if ($CrtVersion) { $xargs += @('--crt-version', $CrtVersion) }
-if ($SdkVersion) { $xargs += @('--sdk-version', $SdkVersion) }
-$xargs += @('splat', '--output', $sysroot, '--use-winsysroot-style', '--preserve-ms-arch-notation', '--disable-symlinks')
-if ($IncludeDebugLibs) { $xargs += '--include-debug-libs' }
-Write-Host "    xwin $($xargs -join ' ')"
-& $xwinExe @xargs
-if ($LASTEXITCODE -ne 0) { throw "xwin failed: $LASTEXITCODE" }
-$stats.xwin_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
-$stats.xwin_download_mb = Get-DirSizeMB (Join-Path $xcache 'dl')
-$kits = Join-Path $sysroot 'Windows Kits\10'
-if (Test-Path (Join-Path $kits 'Include')) {
-  $x = Get-ChildItem (Join-Path $kits 'Include') -Directory | Select-Object -First 1
-  $stats.xwin_has_corecrt_math_h = Test-Path (Join-Path $x.FullName 'ucrt\corecrt_math.h')
-}
+$stats.crt_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
-if ($SdkSource -eq 'nuget') {
-  # Replace xwin's (pruned) Windows SDK with the complete one from Microsoft's official NuGet packages
-  Write-Step 'Fetching Windows SDK from NuGet (Microsoft.Windows.SDK.CPP + .<arch>)'
-  $t.Restart()
-  if (-not $NugetSdkVersion) {
-    $vers = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/index.json').versions | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }
-    if ($SdkVersion) { $vers = $vers | Where-Object { $_.StartsWith($SdkVersion) } }
-    $NugetSdkVersion = $vers[-1]
-  }
-  Remove-Item -Recurse -Force $kits -ErrorAction SilentlyContinue
-  $ng = Join-Path $dl 'nuget'; New-Item -ItemType Directory -Force -Path $ng | Out-Null
-  $dlBytes = 0
-  foreach ($pkg in @('microsoft.windows.sdk.cpp', "microsoft.windows.sdk.cpp.$Arch")) {
-    $f = Join-Path $ng "$pkg.zip"
-    Invoke-Download "https://api.nuget.org/v3-flatcontainer/$pkg/$NugetSdkVersion/$pkg.$NugetSdkVersion.nupkg" $f
-    $dlBytes += (Get-Item $f).Length
-    $x = Join-Path $ng $pkg; New-Item -ItemType Directory -Force -Path $x | Out-Null
-    if ($pkg -eq 'microsoft.windows.sdk.cpp') { & tar.exe -xf $f -C $x 'c/Include' } else { & tar.exe -xf $f -C $x 'c/ucrt' 'c/um' }
-    if ($LASTEXITCODE -ne 0) { throw "failed to extract $pkg" }
-  }
-  $incVer = (Get-ChildItem (Join-Path $ng 'microsoft.windows.sdk.cpp\c\Include') -Directory | Select-Object -First 1).Name
-  New-Item -ItemType Directory -Force -Path "$kits\Include", "$kits\Lib\$incVer" | Out-Null
-  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp\c\Include\$incVer") "$kits\Include\$incVer"
-  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\ucrt") "$kits\Lib\$incVer\ucrt"
-  Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\um") "$kits\Lib\$incVer\um"
-  $stats.nuget_sdk_version = $NugetSdkVersion
-  $stats.nuget_download_mb = [math]::Round($dlBytes / 1MB, 1)
-  $stats.nuget_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
+# ---------------------------------------------------------------- Windows SDK (NuGet)
+Write-Step "Fetching Windows SDK $NugetSdkVersion from NuGet (Microsoft.Windows.SDK.CPP + .$Arch)"
+$t.Restart()
+$ng = Join-Path $dl 'nuget'; New-Item -ItemType Directory -Force -Path $ng | Out-Null
+$dlBytes = 0
+foreach ($pkg in @('microsoft.windows.sdk.cpp', "microsoft.windows.sdk.cpp.$Arch")) {
+  $f = Join-Path $ng "$pkg.zip"
+  Invoke-Download "https://api.nuget.org/v3-flatcontainer/$pkg/$NugetSdkVersion/$pkg.$NugetSdkVersion.nupkg" $f
+  $dlBytes += (Get-Item $f).Length
+  $x = Join-Path $ng $pkg; New-Item -ItemType Directory -Force -Path $x | Out-Null
+  if ($pkg -eq 'microsoft.windows.sdk.cpp') { & tar.exe -xf $f -C $x 'c/Include' } else { & tar.exe -xf $f -C $x 'c/ucrt' 'c/um' }
+  if ($LASTEXITCODE -ne 0) { throw "failed to extract $pkg" }
 }
+$incVer = (Get-ChildItem (Join-Path $ng 'microsoft.windows.sdk.cpp\c\Include') -Directory | Select-Object -First 1).Name
+New-Item -ItemType Directory -Force -Path "$kits\Include", "$kits\Lib\$incVer" | Out-Null
+Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp\c\Include\$incVer") "$kits\Include\$incVer"
+Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\ucrt") "$kits\Lib\$incVer\ucrt"
+Move-Item (Join-Path $ng "microsoft.windows.sdk.cpp.$Arch\c\um") "$kits\Lib\$incVer\um"
+$stats.nuget_sdk_version = $NugetSdkVersion
+$stats.nuget_download_mb = [math]::Round($dlBytes / 1MB, 1)
+$stats.nuget_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 $stats.sysroot_disk_mb = Get-DirSizeMB $sysroot
 
 $vcRoot = Get-ChildItem -Path (Join-Path $sysroot 'VC\Tools\MSVC') -Directory | Sort-Object Name | Select-Object -Last 1
 $sdkInc = Get-ChildItem -Path (Join-Path $kits 'Include') -Directory | Sort-Object Name | Select-Object -Last 1
 $vcVer = $vcRoot.Name; $sdkVer = $sdkInc.Name
 $stats.msvc_version = $vcVer; $stats.winsdk_version = $sdkVer
-$msArch = $Arch  # x64 / arm64 thanks to --preserve-ms-arch-notation
+$msArch = $Arch  # x64 / arm64 (MS naming)
 $include = @(
   "$($vcRoot.FullName)\include",
   "$kits\Include\$sdkVer\ucrt", "$kits\Include\$sdkVer\shared", "$kits\Include\$sdkVer\um",
