@@ -375,7 +375,8 @@ foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
   Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value @(
     '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
     '-fuse-ld=lld',
-    "-Xmicrosoft-windows-sys-root `"$sysroot`"")
+    # NB: backslash is an escape character in clang config files -> use forward slashes
+    "-Xmicrosoft-windows-sys-root `"$($sysroot -replace '\', '/')`"")
 }
 
 # ---------------------------------------------------------------- activation scripts
