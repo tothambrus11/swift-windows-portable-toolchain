@@ -197,7 +197,7 @@ if (-not $msis) {
 Write-Host ('    MSIs: ' + (($msis | ForEach-Object { "$($_.Name) ($([math]::Round($_.Length/1MB))MB)" }) -join ', '))
 
 $swiftRoot = Join-Path $Target 'Swift'   # will contain Toolchains\, Platforms\, Runtimes\ like %LOCALAPPDATA%\Programs\Swift
-$stage = Join-Path $dl 'stage'
+$stage = Join-Path $Target '_'   # keep this short: admin images hit MAX_PATH (error 1603) otherwise
 foreach ($d in @($swiftRoot, $stage)) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
 New-Item -ItemType Directory -Force -Path $swiftRoot, $stage | Out-Null
 foreach ($m in $msis) {
@@ -208,10 +208,14 @@ foreach ($m in $msis) {
     $want = if ($Arch -eq 'arm64') { 'arm64|aarch64' } else { 'amd64|x64' }
     if ($n -notmatch $want) { Write-Host "    skip $($m.Name)"; continue }
   }
-  $s = Join-Path $stage $m.BaseName
+  $msiIdx = 1 + [int]$msiIdx
+  $s = Join-Path $stage "$msiIdx"
   Write-Host "    msiexec /a $($m.Name)"
   $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$s`"", '/L*v', "`"$dl\$($m.BaseName).admin.log`"") -Wait -PassThru
-  if ($p.ExitCode -ne 0) { Get-Content "$dl\$($m.BaseName).admin.log" -Tail 30; throw "msiexec /a $($m.Name) failed: $($p.ExitCode)" }
+  if ($p.ExitCode -ne 0) {
+    Select-String -Path "$dl\$($m.BaseName).admin.log" -Pattern 'Return value 3|Error 1|error 1|Note: 1: 1[0-9]{3} 2:' -Context 3,1 | Select-Object -First 8 | Out-String -Width 400 | Write-Host
+    throw "msiexec /a $($m.Name) failed: $($p.ExitCode)"
+  }
   Get-ChildItem -Path $s -Filter *.msi | Remove-Item -Force   # admin image keeps a copy of the .msi at its root
   # Per-user MSIs land under <TARGETDIR>\LocalApp\Programs\Swift; merge that into $swiftRoot
   $perUser = Join-Path $s 'LocalApp\Programs\Swift'
@@ -232,6 +236,7 @@ foreach ($m in $msis) {
     }
   }
 }
+Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
 $swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\Toolchains\[^\]+\usr\bin\swift\.exe$' } | Select-Object -First 1
