@@ -122,8 +122,9 @@ function Expand-BurnBundle([string]$Bundle, [string]$OutDir) {
   foreach ($cab in $cabs) {
     $d = Join-Path $OutDir ("c$i"); New-Item -ItemType Directory -Force -Path $d | Out-Null
     if ($skip[$i]) { Write-Host "    skipping container $i ($($skip[$i]))"; Remove-Item $cab -Force; $i++; continue }
-    & tar.exe -xf $cab -C $d
-    if ($LASTEXITCODE -ne 0) { & expand.exe -F:* $cab $d | Out-Null; if ($LASTEXITCODE -ne 0) { throw "failed to extract $cab" } }
+    # expand.exe (built into Windows) handles LZX reliably; libarchive's tar fails on the big LZX CABs
+    & expand.exe -F:* $cab $d | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "failed to extract $cab" }
     Remove-Item $cab -Force
     if ($i -eq 0) {
       # The non-asserts toolchain is an alternative copy of the toolchain - don't unpack it
