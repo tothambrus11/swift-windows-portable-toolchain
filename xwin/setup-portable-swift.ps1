@@ -95,16 +95,25 @@ function Expand-BurnBundle([string]$Bundle, [string]$OutDir) {
     $fs.Position = $burnRaw
     $magic = $br.ReadUInt32(); if ($magic -ne 0x00f14300) { throw ('bad burn magic 0x{0:x}' -f $magic) }
     $fs.Position = $burnRaw + 24; $stub = [long]$br.ReadUInt32()
-    $off = $stub; $idx = 0; $cabs = @()
-    while ($off + 36 -lt $fs.Length) {
+    $fs.Position = $burnRaw + 44; $count = $br.ReadUInt32()
+    $sizes = @(); for ($k = 0; $k -lt $count; $k++) { $sizes += [long]$br.ReadUInt32() }
+    # Containers follow the stub; the original Authenticode blob (+ padding) may sit between
+    # the UX container and the attached ones, so search for each CAB header of the expected size.
+    $off = $stub; $cabs = @()
+    for ($idx = 0; $idx -lt $count; $idx++) {
       $fs.Position = $off
-      $sig = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
-      if ($sig -ne 'MSCF') { break }
-      $fs.Position = $off + 8; $size = [long]$br.ReadUInt32()
+      $win = $br.ReadBytes(1MB)
+      $found = -1
+      for ($j = 0; $j -le $win.Length - 12; $j++) {
+        if ($win[$j] -eq 0x4D -and $win[$j+1] -eq 0x53 -and $win[$j+2] -eq 0x43 -and $win[$j+3] -eq 0x46 -and
+            [BitConverter]::ToUInt32($win, $j + 8) -eq $sizes[$idx]) { $found = $j; break }
+      }
+      if ($found -lt 0) { throw "CAB for container $idx (size $($sizes[$idx])) not found near offset $off" }
+      $off += $found
       $cab = Join-Path $OutDir ("container{0}.cab" -f $idx)
-      Write-Host ("    container {0}: offset {1}, {2:n1} MB" -f $idx, $off, ($size / 1MB))
-      Copy-StreamRange $fs $off $size $cab
-      $cabs += $cab; $off += $size; $idx++
+      Write-Host ("    container {0}: offset {1}, {2:n1} MB" -f $idx, $off, ($sizes[$idx] / 1MB))
+      Copy-StreamRange $fs $off $sizes[$idx] $cab
+      $cabs += $cab; $off += $sizes[$idx]
     }
   } finally { $fs.Dispose() }
   if ($cabs.Count -lt 2) { throw "expected UX + attached containers, found $($cabs.Count)" }
