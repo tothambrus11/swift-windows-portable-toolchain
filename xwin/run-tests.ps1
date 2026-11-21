@@ -41,68 +41,64 @@ function Run([string]$exe) {
   if ($LASTEXITCODE -ne 0) { "!! $exe exited with $LASTEXITCODE"; $script:caseFailed = $true }
 }
 
-Invoke-Case 'info' { Run swift --version; Run where.exe swift clang lld-link; where.exe cl link vswhere 2>$null; Get-ChildItem env: | Where-Object Name -match '^(INCLUDE|LIB|SDKROOT|VC|Windows|UCRT|Universal)' | Format-Table -AutoSize | Out-String -Width 400 } ''
-$plat = Split-Path (Split-Path (Split-Path (Split-Path $env:SDKROOT.TrimEnd('\')))) # ...\Windows.platform
-Invoke-Case 'diag-plists' { Get-Content "$plat\Info.plist"; Get-ChildItem $env:SDKROOT -File | ForEach-Object { "--- $($_.Name)"; Get-Content $_.FullName -TotalCount 80 } ; swift build --help | Select-String 'build-system' } ''
+Invoke-Case 'info' { Run swift --version; Run where.exe swift clang lld-link; where.exe cl link vswhere 2>$null; Get-ChildItem env: | Where-Object Name -match '^(INCLUDE|LIB|SDKROOT|VC|Windows|UCRT|Universal)' | Format-Table -AutoSize | Out-String -Width 400; Get-Content (Join-Path (Split-Path (Get-Command clang).Source) 'clang.cfg') } ''
+$plat = Split-Path (Split-Path (Split-Path $env:SDKROOT.TrimEnd('\'))) # ...\Windows.platform
+Invoke-Case 'diag-platform' { Get-Content "$plat\Info.plist"; Get-ChildItem "$plat\Developer\Library" -Recurse -Depth 2 -Directory | ForEach-Object FullName } ''
 
 $sysroot = Join-Path $Root 'winsysroot'
 $kits = Join-Path $sysroot 'Windows Kits\10'
 $sdkVer = $env:UCRTVersion; $vcVer = $env:VCToolsVersion
 $vcTools = "$sysroot\VC\Tools\MSVC\$vcVer"
-# The four driver flags that make the Swift frontend find (and VFS-overlay modulemaps into) the UCRT, WinSDK and VC headers
-$F = @('-windows-sdk-root', $kits, '-windows-sdk-version', $sdkVer, '-visualc-tools-root', $vcTools, '-visualc-tools-version', $vcVer)
-$libFlags = @(); foreach ($l in $env:LIB.Split(';')) { $libFlags += @('-Xlinker', "/LIBPATH:$l") }
-$SPM = @(); foreach ($f in $F) { $SPM += @('-Xswiftc', $f) }
-$SPM += $libFlags
-$CC = @(); foreach ($i in $env:INCLUDE.Split(';')) { $CC += @('-Xcc', '-isystem', '-Xcc', $i) }
+# Explicit driver flags (alternative to the physical modulemaps): make the frontend locate UCRT/WinSDK/VC itself
+$SdkFlags = @('-windows-sdk-root', $kits, '-windows-sdk-version', $sdkVer, '-visualc-tools-root', $vcTools, '-visualc-tools-version', $vcVer)
 
+# ---- main path: no extra flags at all (activate.ps1 env + modulemaps in sysroot + clang.cfg)
 Invoke-Case 'a-hello-swiftc' { Run swiftc hello.swift -o hello.exe; Run .\hello.exe } 'Hello from portable Swift!'
-Invoke-Case 'b0-foundation-env-only' { Run swiftc foundation.swift -o foundation0.exe; Run .\foundation0.exe } 'FOUNDATION OK'
-Invoke-Case 'b-foundation' { Run swiftc @F foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'
-Invoke-Case 'b2-foundation-O' { Run swiftc -O @F foundation.swift -o foundation-o.exe; Run .\foundation-o.exe } 'FOUNDATION OK'
-Invoke-Case 'c-winsdk' { Run swiftc @F winsdk.swift -o winsdk.exe; Run .\winsdk.exe } 'WINSDK OK'
+Invoke-Case 'b-foundation-swiftc' { Run swiftc foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'
+Invoke-Case 'b2-foundation-swiftc-O' { Run swiftc -O foundation.swift -o foundation-o.exe; Run .\foundation-o.exe } 'FOUNDATION OK'
+Invoke-Case 'c-winsdk-swiftc' { Run swiftc winsdk.swift -o winsdk.exe; Run .\winsdk.exe } 'WINSDK OK'
 
 Push-Location swiftpkg
-Invoke-Case 'd1-swiftpm-build' { Run swift build -v @SPM } ''
-Invoke-Case 'd2-swiftpm-run' { Run swift run @SPM Hello } 'SWIFTPM OK'
-Invoke-Case 'd3-swiftpm-test' { Run swift test @SPM } ''
-Invoke-Case 'd4-swiftpm-release' { Run swift build -c release @SPM; Run swift run -c release @SPM Hello } 'SWIFTPM OK'
-Invoke-Case 'd5-swiftpm-native' { Run swift build --build-system native --scratch-path .build-native -v @SPM; Run swift run --build-system native --scratch-path .build-native @SPM Hello } 'SWIFTPM OK'
-Invoke-Case 'd6-swiftpm-native-test' { Run swift test --build-system native --scratch-path .build-native @SPM } ''
+Invoke-Case 'd1-swiftpm-build' { Run swift build } ''
+Invoke-Case 'd2-swiftpm-run' { Run swift run Hello } 'SWIFTPM OK'
+Invoke-Case 'd3-swiftpm-test' { Run swift test } ''
+Invoke-Case 'd4-swiftpm-release' { Run swift build -c release; Run swift run -c release Hello } 'SWIFTPM OK'
+Invoke-Case 'd5-swiftpm-native-run' { Run swift run --build-system native --scratch-path .build-native Hello } 'SWIFTPM OK'
+Invoke-Case 'd6-swiftpm-native-test' { Run swift test --build-system native --scratch-path .build-native } ''
 Pop-Location
 
 Push-Location cpkg
-Invoke-Case 'e-swiftpm-c-target' { Run swift build -v @SPM @CC; Run swift run @SPM @CC CApp } 'CTARGET OK'
-Invoke-Case 'e2-swiftpm-c-native' { Run swift build --build-system native --scratch-path .build-native -v @SPM; Run swift run --build-system native --scratch-path .build-native @SPM CApp } 'CTARGET OK'
+Invoke-Case 'e-swiftpm-c-target' { Run swift run CApp } 'CTARGET OK'
+Invoke-Case 'e2-swiftpm-c-native' { Run swift run --build-system native --scratch-path .build-native CApp } 'CTARGET OK'
 Pop-Location
 
 Push-Location cxx
-Invoke-Case 'f-cxx-interop' { Run swiftc @F -cxx-interoperability-mode=default -I CxxDemo main.swift -o cxx.exe; Run .\cxx.exe } 'CXX OK'
+Invoke-Case 'f-cxx-interop' { Run swiftc -cxx-interoperability-mode=default -I CxxDemo main.swift -o cxx.exe; Run .\cxx.exe } 'CXX OK'
 Pop-Location
 
 Set-Content -Path plain.c -Value '#include <stdio.h>', '#include <math.h>', '#include <windows.h>', 'int main(void){ printf("clang ok %llu %f\n", GetTickCount64(), sqrt(2.0)); return 0; }'
 Invoke-Case 'g-plain-clang' { Run clang plain.c -o plain.exe; Run .\plain.exe } 'clang ok'
-Invoke-Case 'g2-clang-winsysroot-flag' {
+Invoke-Case 'g2-clang-no-INCLUDE-LIB' {
   $i = $env:INCLUDE; $l = $env:LIB; Remove-Item env:INCLUDE, env:LIB
-  Run clang -Xmicrosoft-windows-sys-root $sysroot plain.c -o plain2.exe; Run .\plain2.exe
+  Run clang plain.c -o plain2.exe; Run .\plain2.exe
   $env:INCLUDE = $i; $env:LIB = $l } 'clang ok'
 
-# Registry experiments: does the frontend find the SDK via 'Installed Roots' without flags?
-function Set-KitsRoot($hive) {
-  $k = "${hive}:\SOFTWARE\Microsoft\Windows Kits\Installed Roots"
-  New-Item -Path $k -Force | Out-Null
-  New-ItemProperty -Path $k -Name KitsRoot10 -Value "$kits\" -PropertyType String -Force | Out-Null
-  return $k
-}
-$k = Set-KitsRoot 'HKCU'
-Invoke-Case 'r1-hkcu-registry-winsdk' { Run swiftc winsdk.swift -o winsdk-hkcu.exe; Run .\winsdk-hkcu.exe } 'WINSDK OK'
-Remove-Item -Path $k -Recurse -Force
-$k = Set-KitsRoot 'HKLM'
-Invoke-Case 'r2-hklm-registry-foundation' { Run swiftc foundation.swift -o foundation-hklm.exe; Run .\foundation-hklm.exe } 'FOUNDATION OK'
+# ---- explicit flags variant (no reliance on INCLUDE for the frontend)
+Invoke-Case 'h-flags-foundation-swiftc' { Run swiftc @SdkFlags foundation.swift -o foundation-f.exe; Run .\foundation-f.exe } 'FOUNDATION OK'
+Invoke-Case 'h2-flags-winsdk-swiftc' { Run swiftc @SdkFlags winsdk.swift -o winsdk-f.exe; Run .\winsdk-f.exe } 'WINSDK OK'
+
+# ---- registry variant (needs admin): hide the physical modulemaps, register the kit in HKLM (32-bit view, as LLVM reads it)
+$mm = @("$kits\Include\$sdkVer\ucrt\module.modulemap", "$kits\Include\$sdkVer\um\module.modulemap", "$vcTools\include\module.modulemap")
+foreach ($m in $mm) { Rename-Item $m 'module.modulemap.off' }
+$regKeys = @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots', 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots')
+Invoke-Case 'r0-no-modulemaps-no-registry-foundation' { Run swiftc foundation.swift -o foundation-r0.exe; Run .\foundation-r0.exe } 'FOUNDATION OK'
+foreach ($k in $regKeys) { New-Item -Path $k -Force | Out-Null; New-ItemProperty -Path $k -Name KitsRoot10 -Value "$kits\" -PropertyType String -Force | Out-Null }
+Invoke-Case 'r1-hklm-registry-foundation' { Run swiftc foundation.swift -o foundation-r1.exe; Run .\foundation-r1.exe } 'FOUNDATION OK'
 Push-Location swiftpkg
-Invoke-Case 'r3-hklm-registry-swiftpm' { Run swift build --scratch-path .build-reg; Run swift run --scratch-path .build-reg Hello } 'SWIFTPM OK'
+Invoke-Case 'r2-hklm-registry-swiftpm-test' { Run swift test --scratch-path .build-reg } ''
 Pop-Location
-Remove-Item -Path $k -Recurse -Force
+foreach ($k in $regKeys) { Remove-Item -Path $k -Recurse -Force }
+foreach ($m in $mm) { Rename-Item "$m.off" 'module.modulemap' }
 
 # Summary
 $md = @("| test | result | time (s) |", "|---|---|---|")
@@ -111,6 +107,6 @@ $md = $md -join "`n"
 Write-Host $md
 if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Test matrix ($env:RUNNER_ARCH)`n`n$md`n" }
 if ($ResultsFile) { $results | ConvertTo-Json -Depth 4 | Set-Content -Path $ResultsFile -Encoding UTF8 }
-$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(f-|g2-|b0-|r|d5|d6|e2|diag)' })
+$failed = @($results | Where-Object { $_.status -eq 'FAIL' -and $_.name -notmatch '^(f-|g2-|h|r|d5|d6|e2|diag)' })
 if ($failed.Count -gt 0) { Write-Host "Required failures: $($failed.name -join ', ')"; exit 1 }
 exit 0

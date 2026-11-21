@@ -38,6 +38,8 @@ param(
   # or 'xwin' (VS manifest via xwin; its pruning drops headers such as ucrt\corecrt_math.h)
   [ValidateSet('nuget', 'xwin')][string]$SdkSource = 'nuget',
   [string]$NugetSdkVersion = '',
+  # Don't copy Swift's ucrt/winsdk/vcruntime modulemaps into the sysroot (then you need the -windows-sdk-root... flags)
+  [switch]$NoModulemapCopy,
   [switch]$AcceptMicrosoftLicense,
   # Keep the downloaded installer / xwin cache (useful for CI caching)
   [switch]$KeepDownloads,
@@ -339,11 +341,29 @@ if (-not $KeepDownloads) {
   Remove-Item -Recurse -Force $dl -ErrorAction SilentlyContinue
 }
 
+# ---------------------------------------------------------------- modulemaps
+# The Swift frontend only VFS-overlays its ucrt/winsdk/vcruntime modulemaps onto the SDK when it can
+# *locate* the SDK: -windows-sdk-root/-visualc-tools-root flags or the HKLM registry (admin). SwiftPM does
+# not forward -Xswiftc flags to every job (e.g. the generated test runner), so instead place the
+# modulemaps physically next to the headers (what pre-5.9 Swift installers did) - then clang finds
+# the `ucrt`, `WinSDK`, `vcruntime` modules through the INCLUDE search path alone.
+if (-not $NoModulemapCopy) {
+  $share = Join-Path $sdkRoot 'usr\share'
+  Copy-Item (Join-Path $share 'ucrt.modulemap')      "$kits\Include\$sdkVer\ucrt\module.modulemap" -Force
+  Copy-Item (Join-Path $share 'winsdk.modulemap')    "$kits\Include\$sdkVer\um\module.modulemap" -Force
+  Copy-Item (Join-Path $share 'vcruntime.modulemap') "$($vcRoot.FullName)\include\module.modulemap" -Force
+  Copy-Item (Join-Path $share 'vcruntime.apinotes')  "$($vcRoot.FullName)\include\vcruntime.apinotes" -Force
+}
+
 # ---------------------------------------------------------------- clang default config
-# swiftc links through clang.exe, which defaults to MSVC link.exe (absent without VS). Clang reads
-# <clang-dir>\clang.cfg by default, so make lld the default linker for every clang/swiftc invocation.
+# swiftc links through clang.exe, which defaults to MSVC link.exe (absent without VS), and SwiftPM's
+# build system does not pass INCLUDE/LIB to every clang job. clang reads <clang-dir>\clang.cfg by
+# default, so make lld the default linker and point clang at the /winsysroot-style sysroot.
 foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
-  Set-Content -Path (Join-Path $toolchainBin $cfg) -Value @('# added by setup-portable-swift.ps1: no link.exe without Visual Studio', '-fuse-ld=lld') -Encoding ASCII
+  Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value @(
+    '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
+    '-fuse-ld=lld',
+    "-Xmicrosoft-windows-sys-root `"$sysroot`"")
 }
 
 # ---------------------------------------------------------------- activation scripts
