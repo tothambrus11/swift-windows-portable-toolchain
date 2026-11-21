@@ -97,7 +97,14 @@ $layout = Join-Path $dl 'layout'
 if (Test-Path $layout) { Remove-Item -Recurse -Force $layout }
 $p = Start-Process -FilePath $installer -ArgumentList @('/layout', "`"$layout`"", '/quiet', '/norestart', '/log', "`"$dl\layout.log`"") -Wait -PassThru
 if ($p.ExitCode -ne 0) { Get-Content "$dl\layout.log" -Tail 40 -ErrorAction SilentlyContinue; throw "bundle /layout failed: $($p.ExitCode)" }
-$msis = Get-ChildItem -Path $layout -Recurse -Filter *.msi
+$msis = Get-ChildItem -Path $layout -Recurse -Filter *.msi -ErrorAction SilentlyContinue
+if (-not $msis) {
+  Write-Host "    /layout exit code $($p.ExitCode), no MSIs. Layout dir contents:"
+  Get-ChildItem -Path $layout -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+  Get-ChildItem $dl | Format-Table -AutoSize | Out-String | Write-Host
+  Get-ChildItem $dl -Filter *.log | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 80 | Write-Host }
+  throw 'no MSIs found in bundle layout'
+}
 Write-Host ('    MSIs: ' + (($msis | ForEach-Object { "$($_.Name) ($([math]::Round($_.Length/1MB))MB)" }) -join ', '))
 
 $swiftRoot = Join-Path $Target 'swift'
