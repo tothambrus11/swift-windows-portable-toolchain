@@ -219,8 +219,12 @@ $swiftExe = Get-ChildItem -Path $swiftRoot -Recurse -Filter swift.exe | Where-Ob
 if (-not $swiftExe) { throw "swift.exe not found under $swiftRoot" }
 $toolchainBin = $swiftExe.DirectoryName
 $baseDir = $swiftExe.Directory.Parent.Parent.Parent.Parent.FullName   # ...\Swift (contains Toolchains, Platforms, Runtimes)
-$runtimeBin = Get-ChildItem -Path (Join-Path $baseDir 'Runtimes') -Directory | ForEach-Object { Join-Path $_.FullName 'usr\bin' } | Where-Object { Test-Path $_ } | Select-Object -First 1
-$platform = Get-ChildItem -Path (Join-Path $baseDir 'Platforms') -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
+$runtimeBin = Get-ChildItem -Path $swiftRoot -Recurse -Filter swiftCore.dll | Where-Object { $_.FullName -match '\\Runtimes\\' } | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+$platform = Get-ChildItem -Path $swiftRoot -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
+if (-not $runtimeBin -or -not $platform) {
+  Get-ChildItem -Path $swiftRoot -Recurse -Directory -Depth 5 | Select-Object -ExpandProperty FullName | Write-Host
+  throw "runtime ($runtimeBin) or Windows.platform ($platform) not found"
+}
 $sdkRoot = Join-Path $platform.FullName 'Developer\SDKs\Windows.sdk'
 foreach ($x in @($toolchainBin, $runtimeBin, $sdkRoot)) { if (-not $x -or -not (Test-Path $x)) { throw "expected path missing: $x" } }
 $stats.swift_disk_mb = Get-DirSizeMB $swiftRoot
