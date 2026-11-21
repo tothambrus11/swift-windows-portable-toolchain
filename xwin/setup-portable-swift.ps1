@@ -376,7 +376,7 @@ foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
     '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
     '-fuse-ld=lld',
     # NB: backslash is an escape character in clang config files -> use forward slashes
-    "-Xmicrosoft-windows-sys-root `"$($sysroot -replace '\', '/')`"")
+    "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '/'))`"")
 }
 
 # ---------------------------------------------------------------- activation scripts
