@@ -1,0 +1,5 @@
+module CxxDemo {
+  header "demo.h"
+  requires cplusplus
+  export *
+}

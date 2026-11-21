@@ -1,0 +1,102 @@
+name: xwin-sysroot
+
+on:
+  push:
+    branches: [exp/xwin-sysroot]
+  workflow_dispatch:
+    inputs:
+      swift_version:
+        description: 'Swift version (empty = latest stable)'
+        required: false
+        default: ''
+      arm64:
+        description: 'Also run on windows-11-arm'
+        type: boolean
+        default: false
+
+jobs:
+  portable-swift:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: |
+          $t = Measure-Command { & ./xwin/hide-vs.ps1 | Out-Host }
+          "hide-vs took $([math]::Round($t.TotalSeconds,1))s"
+
+      - name: Verify no VS / MSVC / Windows SDK is reachable
+        run: |
+          . ./xwin/clean-env.ps1
+          $bad = @()
+          foreach ($c in 'cl','link','vswhere','clang','lld-link','swift','gcc') {
+            $cmd = Get-Command $c -ErrorAction SilentlyContinue
+            if ($cmd) { $bad += "$c -> $($cmd.Source)" }
+          }
+          foreach ($p in 'C:\Program Files\Microsoft Visual Studio','C:\Program Files (x86)\Microsoft Visual Studio','C:\Program Files (x86)\Windows Kits',
+                         'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots') {
+            if (Test-Path $p) { $bad += "still present: $p" }
+          }
+          $vsw = Get-ChildItem 'C:\Program Files*' -Recurse -Filter vswhere.exe -Depth 4 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\.hidden' }
+          if ($vsw) { $bad += "vswhere found: $($vsw.FullName)" }
+          Get-ChildItem env: | Where-Object { $_.Name -match '^(INCLUDE|LIB|VC|Windows ?Sdk|UniversalCRT|UCRT)' } | Format-Table | Out-Host
+          if ($bad) { $bad | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
+          "OK: no cl/link/vswhere/clang on PATH, VS + Windows Kits hidden"
+
+      - name: Setup portable Swift (xwin sysroot)
+        run: |
+          . ./xwin/clean-env.ps1
+          $t = Measure-Command {
+            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptMicrosoftLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' | Out-Host
+          }
+          if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
+          "setup took $([math]::Round($t.TotalSeconds,1))s"
+          Get-Content "$env:LOCALAPPDATA\swift-portable\setup-stats.json"
+          Get-Content "$env:LOCALAPPDATA\swift-portable\activate.ps1"
+          "## Setup stats (${{ matrix.arch }})`n``````json`n$(Get-Content -Raw "$env:LOCALAPPDATA\swift-portable\setup-stats.json")`n``````" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Layout overview
+        run: |
+          $r = "$env:LOCALAPPDATA\swift-portable"
+          Get-ChildItem $r\swift -Directory -Recurse -Depth 4 | Select-Object -ExpandProperty FullName
+          Get-ChildItem $r\winsysroot -Directory -Recurse -Depth 5 | Select-Object -ExpandProperty FullName
+          foreach ($d in Get-ChildItem $r\winsysroot -Directory -Recurse -Depth 5) {
+            $s = (Get-ChildItem $d.FullName -Recurse -File | Measure-Object Length -Sum).Sum
+            if ($s -gt 20MB) { "{0,8:n0} MB  {1}" -f ($s/1MB), $d.FullName }
+          }
+
+      - name: Test matrix
+        run: |
+          & ./xwin/run-tests.ps1 -Root "$env:LOCALAPPDATA\swift-portable" -ResultsFile "$env:RUNNER_TEMP\results-${{ matrix.arch }}.json"
+
+      - name: Fresh-shell check (cmd + activate.bat)
+        if: always()
+        shell: cmd
+        run: |
+          set "PATH=C:\Windows\System32;C:\Windows"
+          set INCLUDE=
+          set LIB=
+          call "%LOCALAPPDATA%\swift-portable\activate.bat"
+          cd /d "%GITHUB_WORKSPACE%\xwin\tests\swiftpkg"
+          swift build -c release && swift run -c release Hello
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/results-*.json
+            ~/AppData/Local/swift-portable/setup-stats.json
+            ~/AppData/Local/swift-portable/activate.ps1
