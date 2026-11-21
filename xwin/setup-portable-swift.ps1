@@ -196,38 +196,51 @@ if (-not $msis) {
 }
 Write-Host ('    MSIs: ' + (($msis | ForEach-Object { "$($_.Name) ($([math]::Round($_.Length/1MB))MB)" }) -join ', '))
 
-$swiftRoot = Join-Path $Target 'swift'
-if (Test-Path $swiftRoot) { Remove-Item -Recurse -Force $swiftRoot }
-New-Item -ItemType Directory -Force -Path $swiftRoot | Out-Null
+$swiftRoot = Join-Path $Target 'Swift'   # will contain Toolchains\, Platforms\, Runtimes\ like %LOCALAPPDATA%\Programs\Swift
+$stage = Join-Path $dl 'stage'
+foreach ($d in @($swiftRoot, $stage)) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
+New-Item -ItemType Directory -Force -Path $swiftRoot, $stage | Out-Null
 foreach ($m in $msis) {
   $n = $m.Name.ToLowerInvariant()
   if (-not $AllSdks -and ($n -match 'android|wasm|wasi|static|noasserts')) { Write-Host "    skip $($m.Name)"; continue }
-  # Only the SDK/runtime MSIs for the requested arch (others are harmless but large)
-  if ($n -match '^(sdk\.windows|rtl)\.(amd64|x64|x86|arm64|aarch64)') {
+  # Only the runtime MSI for the requested arch
+  if ($n -match '^rtl\.(amd64|x64|x86|arm64|aarch64)') {
     $want = if ($Arch -eq 'arm64') { 'arm64|aarch64' } else { 'amd64|x64' }
     if ($n -notmatch $want) { Write-Host "    skip $($m.Name)"; continue }
   }
+  $s = Join-Path $stage $m.BaseName
   Write-Host "    msiexec /a $($m.Name)"
-  $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$swiftRoot`"", '/L*v', "`"$dl\$($m.BaseName).admin.log`"") -Wait -PassThru
+  $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$s`"", '/L*v', "`"$dl\$($m.BaseName).admin.log`"") -Wait -PassThru
   if ($p.ExitCode -ne 0) { Get-Content "$dl\$($m.BaseName).admin.log" -Tail 30; throw "msiexec /a $($m.Name) failed: $($p.ExitCode)" }
-  $nfiles = @(Get-ChildItem -Path $swiftRoot -Recurse -File).Count
-  Write-Host "      -> $nfiles files total in admin image"
+  Get-ChildItem -Path $s -Filter *.msi | Remove-Item -Force   # admin image keeps a copy of the .msi at its root
+  # Per-user MSIs land under <TARGETDIR>\LocalApp\Programs\Swift; merge that into $swiftRoot
+  $perUser = Join-Path $s 'LocalApp\Programs\Swift'
+  if (Test-Path $perUser) {
+    & robocopy.exe $perUser $swiftRoot /E /MOVE /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed for $($m.Name)" }
+    Remove-Item -Recurse -Force (Join-Path $s 'LocalApp') -ErrorAction SilentlyContinue
+  }
+  # The runtime MSI's files land directly in TARGETDIR: give them the standard Runtimes\<ver>\usr\bin home
+  $left = @(Get-ChildItem -Path $s -Force)
+  if ($left.Count -gt 0) {
+    if ($n -match '^rtl\.') {
+      $rt = Join-Path $swiftRoot "Runtimes\$SwiftVersion\usr\bin"
+      New-Item -ItemType Directory -Force -Path $rt | Out-Null
+      & robocopy.exe $s $rt /E /MOVE /NFL /NDL /NJH /NJS /NP | Out-Null
+    } else {
+      Write-Host "      note: $($m.Name) also produced: $(($left | ForEach-Object Name) -join ', ') (kept under $s)"
+    }
+  }
 }
-# admin installs leave copies of the .msi files in the TARGETDIR root - drop those (only top level)
-Get-ChildItem -Path $swiftRoot -Filter *.msi | Remove-Item -Force
-Write-Host '    swiftCore.dll locations:'
-Get-ChildItem -Path $swiftRoot -Recurse -Filter swiftCore.dll | ForEach-Object { Write-Host "      $($_.FullName)" }
-Get-ChildItem -Path $swiftRoot -Recurse -Include *.msi, *.msm | ForEach-Object { Write-Host "      nested: $($_.FullName)" }
 $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 
-$swiftExe = Get-ChildItem -Path $swiftRoot -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
+$swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\Toolchains\[^\]+\usr\bin\swift\.exe$' } | Select-Object -First 1
 if (-not $swiftExe) { throw "swift.exe not found under $swiftRoot" }
 $toolchainBin = $swiftExe.DirectoryName
-$baseDir = $swiftExe.Directory.Parent.Parent.Parent.Parent.FullName   # ...\Swift (contains Toolchains, Platforms, Runtimes)
-$runtimeBin = Get-ChildItem -Path $swiftRoot -Recurse -Filter swiftCore.dll | Where-Object { $_.FullName -match '\\Runtimes\\' } | Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
-$platform = Get-ChildItem -Path $swiftRoot -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
-if (-not $runtimeBin -or -not $platform) {
-  Get-ChildItem -Path $swiftRoot -Recurse -Directory -Depth 5 | Select-Object -ExpandProperty FullName | Write-Host
+$runtimeBin = Join-Path $swiftRoot "Runtimes\$SwiftVersion\usr\bin"
+$platform = Get-ChildItem -Path (Join-Path $swiftRoot 'Platforms') -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
+if (-not (Test-Path (Join-Path $runtimeBin 'swiftCore.dll')) -or -not $platform) {
+  Get-ChildItem -Path $Target -Recurse -Directory -Depth 6 | Select-Object -ExpandProperty FullName | Write-Host
   throw "runtime ($runtimeBin) or Windows.platform ($platform) not found"
 }
 $sdkRoot = Join-Path $platform.FullName 'Developer\SDKs\Windows.sdk'
