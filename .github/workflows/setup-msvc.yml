@@ -50,6 +50,7 @@ jobs:
         include:
           - { runner: windows-latest, arch: x64, swift: '6.4.3' }
           - { runner: windows-11-arm, arch: arm64, swift: '6.4.3' }
+          - { runner: windows-latest, arch: x64, swift: '6.2.4' }
           - { runner: windows-latest, arch: x64, swift: '6.2.4', modulemaps: overlay }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50

@@ -90,6 +90,17 @@ if ($Cases -contains 'foundation') {
   Invoke-Case 'foundation-swiftc' { Run swiftc foundation.swift -o fdemo.exe; Run .\fdemo.exe } 'FOUNDATION OK'
   Invoke-Case 'foundation-swiftc-O' { Run swiftc -O foundation.swift -o fdemo-o.exe; Run .\fdemo-o.exe } 'FOUNDATION OK'
 }
+if ($Cases -contains 'foundation') {
+  Invoke-Case 'diag-foundation-imports' {
+    "fdemo.exe imports: $((Get-PEImports (Resolve-Path .\fdemo.exe)) -join ', ')"
+    $lib = Get-ChildItem (Split-Path (Split-Path (Split-Path (Split-Path (Split-Path (Get-Command swift).Source))))) -Recurse -Filter swift_Builtin_float.lib -ErrorAction SilentlyContinue | Where-Object FullName -match 'x86_64|aarch64' | Select-Object -First 1
+    if ($lib) {
+      $txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($lib.FullName))
+      "$($lib.FullName): $($lib.Length) bytes, mentions swift_Builtin_float.dll: $($txt.Contains('swift_Builtin_float.dll')), .obj members: $(([regex]::Matches($txt, '[\w.-]+\.obj')).Count)"
+    }
+    swiftc -v foundation.swift -o fdemo-v.exe 2>&1 | Select-String -Pattern 'clang.*-o fdemo-v|lld|link' | Select-Object -Last 2 | ForEach-Object { "$_".Substring(0, [math]::Min(1500, "$_".Length)) }
+  } ''
+}
 if ($Cases -contains 'winsdk') { Invoke-Case 'winsdk-swiftc' { Run swiftc winsdk.swift -o winsdk.exe; Run .\winsdk.exe } 'WINSDK OK' }
 if ($Cases -contains 'swiftpm') {
   Push-Location swiftpkg
