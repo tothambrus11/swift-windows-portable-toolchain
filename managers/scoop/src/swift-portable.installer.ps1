@@ -10,7 +10,8 @@ if ($spSource -eq 'prebuilt') {
     Remove-Item "$dir\swift-toolchain.archive"
 } else {
     # The official swift.org installer bundle (hash-checked by Scoop), unpacked without running it
-    & $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part swift -Target $dir -SwiftVersion $version -Arch $spArch -InstallerPath "$dir\swift-installer.exe"
+    # -NoAsserts: the asserts toolchain trips an LLVM VFS assertion when used through Scoop's `current` junction
+    & $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part swift -NoAsserts -Target $dir -SwiftVersion $version -Arch $spArch -InstallerPath "$dir\swift-installer.exe"
     if ($LASTEXITCODE) { throw "swift-portable: unpacking the swift.org installer failed (exit $LASTEXITCODE)" }
 }
 # Version-free directory names, so that the manifest's env_add_path / env_set are static

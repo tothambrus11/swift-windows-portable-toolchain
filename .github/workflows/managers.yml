@@ -260,3 +260,43 @@ jobs:
           . ./managers/common/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
           Set-Location "$env:RUNNER_TEMP\proj"
           & "$env:GITHUB_WORKSPACE/managers/common/ci/test-swift.ps1" -Project "$env:RUNNER_TEMP\proj" -Exec 'mise exec --'
+
+  junction-probe:
+    # Root-cause probe: the asserts toolchain reached through a directory junction (Scoop's `current`, vfox's
+    # sdks\ link) trips "virtual path not absolute" in LLVM's VirtualFileSystem. Informational only.
+    name: probe - asserts toolchain through a junction (VS hidden)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: ./managers/common/ci/hide-vs.ps1 | Out-Host
+      - name: Install the official (asserts) toolchain with the bootstrapper, no PATH changes
+        run: |
+          . ./managers/common/ci/clean-env.ps1
+          $code = Get-Content -Raw ./managers/bootstrap/install.ps1
+          & ([scriptblock]::Create($code)) -SwiftVersion $env:SWIFT_VERSION -Source official -AcceptMsvcLicense -NoModifyPath -ScriptUrl $env:SCRIPT_URL | Out-Host
+      - name: Compile through real paths vs. junctions
+        run: |
+          . ./managers/common/ci/clean-env.ps1
+          $base = $env:PATH
+          $tc = "$env:LOCALAPPDATA\swift-portable\toolchains\$env:SWIFT_VERSION"
+          New-Item -ItemType Junction -Path C:\jtc -Target $tc | Out-Null
+          $rel = @{
+            bin = (Get-ChildItem "$tc\Swift\Toolchains" -Directory)[0].Name
+            rt  = (Get-ChildItem "$tc\Swift\Runtimes" -Directory)[0].Name
+            pl  = (Get-ChildItem "$tc\Swift\Platforms" -Directory)[0].Name }
+          Copy-Item managers/common/ci/tests/foundation.swift "$env:RUNNER_TEMP\f.swift"
+          Set-Location $env:RUNNER_TEMP
+          $rows = @()
+          foreach ($c in @(@{ n = 'toolchain real, SDKROOT real'; t = $tc; s = $tc }, @{ n = 'toolchain junction, SDKROOT real'; t = 'C:\jtc'; s = $tc },
+                           @{ n = 'toolchain real, SDKROOT junction'; t = $tc; s = 'C:\jtc' }, @{ n = 'toolchain junction, SDKROOT junction'; t = 'C:\jtc'; s = 'C:\jtc' })) {
+            $env:PATH = "$($c.t)\Swift\Toolchains\$($rel.bin)\usr\bin;$($c.t)\Swift\Runtimes\$($rel.rt)\usr\bin;$base"
+            $env:SDKROOT = "$($c.s)\Swift\Platforms\$($rel.pl)\Windows.platform\Developer\SDKs\Windows.sdk\"
+            $out = swiftc f.swift -o p.exe 2>&1 | Out-String
+            $r = if ($LASTEXITCODE -eq 0) { 'OK' } elseif ($out -match 'virtual path not absolute') { 'ASSERT: virtual path not absolute' } else { "FAIL: $($out.Substring(0, [math]::Min(200, $out.Length)))" }
+            $rows += "| $($c.n) | $r |"
+          }
+          $md = "### junction probe (asserts toolchain, Swift $env:SWIFT_VERSION)`n| case | swiftc f.swift |`n|---|---|`n" + ($rows -join "`n")
+          $md; $md >> $env:GITHUB_STEP_SUMMARY
+          $global:LASTEXITCODE = 0

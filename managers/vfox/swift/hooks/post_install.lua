@@ -30,7 +30,10 @@ local function windows(ctx)
     local base = q(powershell()) .. " -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " .. q(script)
         .. " -Target " .. q(root) .. " -Arch " .. swiftorg.win_arch()
     local extra = compat.is_mise and "" or " -StableNames"   -- see env_keys.lua
-    if swiftorg.truthy(options.no_asserts) then
+    -- Standalone vfox reaches the toolchain through its sdks\<name> symlink (`vfox use`), and the asserts
+    -- toolchain then trips an LLVM VFS assertion ("virtual path not absolute"): default to no-asserts there.
+    local asserts = os.getenv("SWIFT_PORTABLE_ASSERTS")
+    if swiftorg.truthy(options.no_asserts) or (not compat.is_mise and not swiftorg.truthy(asserts)) then
         extra = extra .. " -NoAsserts"
     end
     if swiftorg.truthy(options.full) then

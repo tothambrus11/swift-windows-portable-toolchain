@@ -222,9 +222,10 @@ $doSysroot = $Part -in 'all', 'sysroot', 'fetch-sysroot'   # download the CRT + 
 $doLink = $Part -in 'all', 'sysroot', 'link'               # configure the toolchain in <Target> for a sysroot
 $sysroot = if ($SysrootDir) { [System.IO.Path]::GetFullPath($SysrootDir) } else { Join-Path $Target 'winsysroot' }
 $sharedSysroot = -not $sysroot.StartsWith($Target + '\', [System.StringComparison]::OrdinalIgnoreCase)
-# Even with a shared sysroot the modulemaps are copied in by default (-Part link writes only these few files):
-# overlay mode crashed the asserts toolchain with a shared sysroot reached through Scoop's `current` junction
-# ("virtual path not absolute", run 45050299750); the no-asserts build was fine.
+# Even with a shared sysroot the modulemaps are copied in by default (-Part link writes only these few files);
+# -ModulemapMode overlay keeps the sysroot untouched. (Note: the *asserts* toolchain trips an LLVM VFS assertion,
+# "virtual path not absolute", whenever SDKROOT/the toolchain is reached through a directory junction or symlink,
+# e.g. Scoop's apps\<app>\current or vfox's sdks\<name> link, in either mode - the no-asserts build is fine.)
 $stats.part = $Part
 if (-not $SwiftVersion -and $doSwift) {
   $rel = Invoke-RestMethod -Uri 'https://www.swift.org/api/v1/install/releases.json'
