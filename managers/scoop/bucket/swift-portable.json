@@ -1,0 +1,90 @@
+{
+    "version":  "6.4.3",
+    "description":  "Swift toolchain for Windows without Visual Studio (repackaged swift.org no-asserts build, Swift-only archive)",
+    "homepage":  "https://github.com/tothambrus11/swift-windows-portable-toolchain",
+    "license":  "Apache-2.0",
+    "depends":  "msvc-sysroot",
+    "notes":  [
+                  "Swift links through the shared msvc-sysroot app (or an installed Visual Studio).",
+                  "Run `scoop reset swift-portable@<version>` to switch between installed Swift versions."
+              ],
+    "architecture":  {
+                         "64bit":  {
+                                       "url":  [
+                                                   "https://github.com/tothambrus11/swift-windows-portable-toolchain/releases/download/swift-6.4.3-portable.0/swift-6.4.3-windows-x64-portable.tar.xz#/swift-toolchain.archive",
+                                                   "https://raw.githubusercontent.com/tothambrus11/swift-windows-portable-toolchain/exp/managers/managers/common/setup-portable-swift.ps1"
+                                               ],
+                                       "hash":  [
+                                                    "99934abc33c978d6550e0750b45b5b4bd3636c9c1cd3aa197b4e0943769d1444",
+                                                    "cade1a02002be635667f725a8372e40068f08adce2879203c81fb37c0665ddc9"
+                                                ]
+                                   },
+                         "arm64":  {
+                                       "url":  [
+                                                   "https://github.com/tothambrus11/swift-windows-portable-toolchain/releases/download/swift-6.4.3-portable.0/swift-6.4.3-windows-arm64-portable.tar.xz#/swift-toolchain.archive",
+                                                   "https://raw.githubusercontent.com/tothambrus11/swift-windows-portable-toolchain/exp/managers/managers/common/setup-portable-swift.ps1"
+                                               ],
+                                       "hash":  [
+                                                    "73e9f0c1fffc67bf1273255dcd988494ac6c2303b94aaabdd8dcdadd7410475f",
+                                                    "cade1a02002be635667f725a8372e40068f08adce2879203c81fb37c0665ddc9"
+                                                ]
+                                   }
+                     },
+    "installer":  {
+                      "script":  [
+                                     "$spSource = 'prebuilt'",
+                                     "$spArch = if ($architecture -eq 'arm64') { 'arm64' } else { 'x64' }",
+                                     "$spPs = (Get-Process -Id $PID).Path",
+                                     "$spScript = \"$dir\\setup-portable-swift.ps1\"",
+                                     "if ($spSource -eq 'prebuilt') {",
+                                     "    & \"$env:SystemRoot\\System32\\tar.exe\" -xf \"$dir\\swift-toolchain.archive\" -C $dir --strip-components=1",
+                                     "    if ($LASTEXITCODE) { throw \"swift-portable: extracting the toolchain archive failed (exit $LASTEXITCODE)\" }",
+                                     "    Remove-Item \"$dir\\swift-toolchain.archive\"",
+                                     "} else {",
+                                     "    & $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part swift -Target $dir -SwiftVersion $version -Arch $spArch -InstallerPath \"$dir\\swift-installer.exe\"",
+                                     "    if ($LASTEXITCODE) { throw \"swift-portable: unpacking the swift.org installer failed (exit $LASTEXITCODE)\" }",
+                                     "}",
+                                     "foreach ($spSub in 'Toolchains', 'Runtimes', 'Platforms') {",
+                                     "    $spD = @(Get-ChildItem \"$dir\\Swift\\$spSub\" -Directory)",
+                                     "    if ($spD.Count -ne 1) { throw \"swift-portable: expected one directory in Swift\\$spSub, found $($spD.Count)\" }",
+                                     "    if ($spD[0].Name -ne 'current') { Rename-Item $spD[0].FullName 'current' }",
+                                     "}",
+                                     "$spSys = \"$(Split-Path (Split-Path $dir))\\msvc-sysroot\\current\\winsysroot\"",
+                                     "$spKind = if (Test-Path \"$spSys\\sysroot.json\") { (Get-Content -Raw \"$spSys\\sysroot.json\" | ConvertFrom-Json).kind } else { 'none' }",
+                                     "$spPart = if ($spKind -eq 'portable') { 'link' } else { 'env' }",
+                                     "& $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part $spPart -Target $dir -SysrootDir $spSys",
+                                     "if ($LASTEXITCODE) { throw \"swift-portable: configuring the toolchain failed (exit $LASTEXITCODE)\" }",
+                                     "Write-Host \"swift-portable: MSVC/Windows SDK: $(if ($spKind -eq 'portable') { \"portable sysroot $spSys\" } elseif ($spKind -eq 'vs') { 'installed Visual Studio' } else { 'none (install msvc-sysroot)' })\""
+                                 ]
+                  },
+    "env_add_path":  [
+                         "Swift\\Toolchains\\current\\usr\\bin",
+                         "Swift\\Runtimes\\current\\usr\\bin"
+                     ],
+    "env_set":  {
+                    "SDKROOT":  "$dir\\Swift\\Platforms\\current\\Windows.platform\\Developer\\SDKs\\Windows.sdk\\"
+                },
+    "checkver":  {
+                     "github":  "https://github.com/tothambrus11/swift-windows-portable-toolchain",
+                     "regex":  "swift-([\\d.]+)-portable\\.0"
+                 },
+    "autoupdate":  {
+                       "architecture":  {
+                                            "64bit":  {
+                                                          "url":  [
+                                                                      "https://github.com/tothambrus11/swift-windows-portable-toolchain/releases/download/swift-$version-portable.0/swift-$version-windows-x64-portable.tar.xz#/swift-toolchain.archive",
+                                                                      "https://raw.githubusercontent.com/tothambrus11/swift-windows-portable-toolchain/exp/managers/managers/common/setup-portable-swift.ps1"
+                                                                  ]
+                                                      },
+                                            "arm64":  {
+                                                          "url":  [
+                                                                      "https://github.com/tothambrus11/swift-windows-portable-toolchain/releases/download/swift-$version-portable.0/swift-$version-windows-arm64-portable.tar.xz#/swift-toolchain.archive",
+                                                                      "https://raw.githubusercontent.com/tothambrus11/swift-windows-portable-toolchain/exp/managers/managers/common/setup-portable-swift.ps1"
+                                                                  ]
+                                                      }
+                                        },
+                       "hash":  {
+                                    "url":  "$url.sha256"
+                                }
+                   }
+}

@@ -1,0 +1,209 @@
+name: managers
+
+# Prototypes of distributing the portable, VS-free Swift toolchain through package/tool managers
+# (managers/): a Scoop bucket, a standalone-vfox plugin and a rustup-style bootstrapper.
+on:
+  push:
+    branches: [exp/managers]
+  workflow_dispatch:
+
+env:
+  SWIFT_VERSION: '6.4.3'
+  SCRIPT_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/managers/common/setup-portable-swift.ps1
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  scoop:
+    name: scoop ${{ matrix.arch }}${{ matrix.vs && ' (VS present)' || ' (VS hidden)' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64, vs: false }
+          - { runner: windows-11-arm, arch: arm64, vs: false }
+          - { runner: windows-latest, arch: x64, vs: true }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      JOB_LABEL: scoop ${{ matrix.arch }}${{ matrix.vs && ' VS present' || '' }}
+      VS_PRESENT: ${{ matrix.vs }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        if: ${{ !matrix.vs }}
+        run: ./managers/common/ci/hide-vs.ps1 | Out-Host
+      - name: Install Scoop
+        run: |
+          Invoke-RestMethod https://get.scoop.sh -OutFile "$env:RUNNER_TEMP\install-scoop.ps1"
+          & "$env:RUNNER_TEMP\install-scoop.ps1" -RunAsAdmin | Out-Host
+          "$env:USERPROFILE\scoop\shims" >> $env:GITHUB_PATH
+      - name: Build the bucket (manifests pinned to this commit's setup script) and add it
+        run: |
+          ./managers/scoop/build-bucket.ps1 -ScriptUrl $env:SCRIPT_URL -OutDir "$env:RUNNER_TEMP\bucket\bucket"
+          Get-Content "$env:RUNNER_TEMP\bucket\bucket\swift-portable.json"
+          git -C "$env:RUNNER_TEMP\bucket" init -q
+          git -C "$env:RUNNER_TEMP\bucket" add .
+          git -C "$env:RUNNER_TEMP\bucket" -c user.name=ci -c user.email=ci@example.invalid commit -q -m bucket
+          scoop bucket add swift-portable "$env:RUNNER_TEMP\bucket"
+          scoop bucket list
+      - name: License gate - install without acceptance must fail and download nothing from Microsoft
+        if: ${{ !matrix.vs }}
+        run: |
+          $out = scoop install swift-portable/swift-portable 2>&1 | Out-String
+          $out
+          $apps = "$env:USERPROFILE\scoop\apps"
+          $leaked = @(Get-ChildItem "$apps\msvc-sysroot" -Recurse -Include *.vsix, *.nupkg, *.lib -ErrorAction SilentlyContinue)
+          if ($leaked) { $leaked | % FullName; Write-Host '::error::Microsoft files downloaded without acceptance'; exit 1 }
+          if (Test-Path "$apps\swift-portable\current\Swift") { Write-Host '::error::swift-portable installed although its dependency failed'; exit 1 }
+          if ($out -notmatch 'not accepted') { Write-Host '::error::no license message'; exit 1 }
+          scoop list
+          # a failed install leaves the app half-registered: Scoop wants an uninstall before retrying
+          scoop uninstall msvc-sysroot 2>&1 | Out-Host
+          $global:LASTEXITCODE = 0
+          "## scoop ${{ matrix.arch }}: license gate OK (install failed, nothing from Microsoft)" >> $env:GITHUB_STEP_SUMMARY
+      - name: Install with acceptance (or with VS present, without)
+        run: |
+          if ($env:VS_PRESENT -ne 'true') { $env:SWIFT_PORTABLE_ACCEPT_MSVC_LICENSE = '1' }
+          $t = Measure-Command { scoop install swift-portable/swift-portable 2>&1 | Out-Host }
+          if ($LASTEXITCODE) { exit 1 }
+          "scoop install took $([math]::Round($t.TotalSeconds))s"
+          "## scoop ${{ matrix.arch }}: scoop install swift-portable took $([math]::Round($t.TotalSeconds))s" >> $env:GITHUB_STEP_SUMMARY
+          scoop list
+          $apps = "$env:USERPROFILE\scoop\apps"
+          Get-Content "$apps\msvc-sysroot\current\winsysroot\sysroot.json"
+          Get-Content "$apps\swift-portable\current\Swift\Toolchains\current\usr\bin\clang.cfg" -ErrorAction SilentlyContinue
+          if ($env:VS_PRESENT -eq 'true' -and (Test-Path "$apps\msvc-sysroot\current\winsysroot\VC")) { Write-Host '::error::Microsoft files downloaded although VS is installed'; exit 1 }
+          $exe = Get-ChildItem "$apps\swift-portable\current\Swift\Toolchains" -Recurse -Filter swift-frontend.exe | Select-Object -First 1
+          "hard links of swift-frontend.exe: $((fsutil hardlink list $exe.FullName | Measure-Object).Count)"
+          [Environment]::GetEnvironmentVariable('Path', 'User')
+          [Environment]::GetEnvironmentVariable('SDKROOT', 'User')
+      - name: Fresh shell (user env from the registry only) - build, run, test
+        run: |
+          if ($env:VS_PRESENT -eq 'true') { $env:SDKROOT = [Environment]::GetEnvironmentVariable('SDKROOT', 'User'); $env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $env:Path }
+          else { . ./managers/common/ci/fresh-env.ps1 }
+          ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
+      - name: Second toolchain (official installer) reuses the shared sysroot
+        if: ${{ !matrix.vs && matrix.arch == 'x64' }}
+        run: |
+          $env:SWIFT_PORTABLE_ACCEPT_MSVC_LICENSE = '1'
+          $t = Measure-Command { scoop install swift-portable/swift-portable-official 2>&1 | Out-Host }
+          if ($LASTEXITCODE) { exit 1 }
+          "## scoop x64: scoop install swift-portable-official took $([math]::Round($t.TotalSeconds))s (sysroot reused)" >> $env:GITHUB_STEP_SUMMARY
+          $apps = "$env:USERPROFILE\scoop\apps"
+          Get-ChildItem "$apps\msvc-sysroot" | Format-Table Name | Out-Host
+          foreach ($a in 'swift-portable', 'swift-portable-official') { "$a :"; Get-Content "$apps\$a\current\Swift\Toolchains\current\usr\bin\clang.cfg" }
+          . ./managers/common/ci/fresh-env.ps1
+          (Get-Command swift).Source
+          ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj2"
+
+  vfox:
+    name: vfox ${{ matrix.arch }} ${{ matrix.source }}${{ matrix.vs && ' (VS present)' || ' (VS hidden)' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64, zip: x86_64, source: official, vs: false }
+          - { runner: windows-11-arm, arch: arm64, zip: aarch64, source: prebuilt, vs: false }
+          - { runner: windows-latest, arch: x64, zip: x86_64, source: prebuilt, vs: true }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      JOB_LABEL: vfox ${{ matrix.arch }} ${{ matrix.source }}${{ matrix.vs && ' VS present' || '' }}
+      VS_PRESENT: ${{ matrix.vs }}
+      SWIFT_PORTABLE_SOURCE: ${{ matrix.source }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        if: ${{ !matrix.vs }}
+        run: ./managers/common/ci/hide-vs.ps1 | Out-Host
+      - name: Install vfox, add the plugin
+        run: |
+          $d = "$env:RUNNER_TEMP\vfox"
+          gh release download v1.1.0 -R version-fox/vfox -p "vfox_1.1.0_windows_${{ matrix.zip }}.zip" -D $d
+          Expand-Archive "$d\*.zip" $d
+          $exe = Get-ChildItem $d -Recurse -Filter vfox.exe | Select-Object -First 1
+          "VFOX_DIR=$($exe.DirectoryName)" >> $env:GITHUB_ENV
+          & $exe.FullName --version
+          ./managers/vfox/pack.ps1 -Out "$env:RUNNER_TEMP\swift-vfox-plugin.zip"
+          & $exe.FullName add --source "$env:RUNNER_TEMP\swift-vfox-plugin.zip" swift
+          & $exe.FullName search swift 2>&1 | Select-Object -First 3
+          & $exe.FullName available swift 2>&1 | Out-Null
+          $global:LASTEXITCODE = 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: License gate - install without acceptance must fail before any download
+        if: ${{ !matrix.vs }}
+        run: |
+          . ./managers/common/ci/clean-env.ps1; $env:Path = "$env:VFOX_DIR;$env:Path"
+          $out = vfox install -y "swift@$env:SWIFT_VERSION" 2>&1 | Out-String
+          $out
+          if ($out -notmatch 'not accepted') { Write-Host '::error::no license message'; exit 1 }
+          $sys = "$env:LOCALAPPDATA\swift-portable\msvc-sysroot-${{ matrix.arch }}"
+          if (Test-Path $sys) { Write-Host '::error::sysroot created without acceptance'; exit 1 }
+          $left = @(Get-ChildItem "$env:USERPROFILE\.vfox", "$env:USERPROFILE\.version-fox" -Recurse -File -Include *.exe, *.xz, *.vsix, *.nupkg -ErrorAction SilentlyContinue)
+          if ($left) { $left | % FullName; Write-Host '::error::something was downloaded'; exit 1 }
+          $global:LASTEXITCODE = 0
+          "## vfox ${{ matrix.arch }}: license gate OK (install refused before any download)" >> $env:GITHUB_STEP_SUMMARY
+      - name: Install with acceptance (or with VS present, without)
+        run: |
+          if ($env:VS_PRESENT -ne 'true') { . ./managers/common/ci/clean-env.ps1; $env:SWIFT_PORTABLE_ACCEPT_MSVC_LICENSE = '1' }
+          $env:Path = "$env:VFOX_DIR;$env:Path"
+          $t = Measure-Command { vfox install -y "swift@$env:SWIFT_VERSION" 2>&1 | Out-Host }
+          if ($LASTEXITCODE) { exit 1 }
+          "## vfox ${{ matrix.arch }} ${{ matrix.source }}: vfox install took $([math]::Round($t.TotalSeconds))s" >> $env:GITHUB_STEP_SUMMARY
+          vfox list swift
+          $sys = "$env:LOCALAPPDATA\swift-portable\msvc-sysroot-${{ matrix.arch }}"
+          if (Test-Path $sys) { Get-Content "$sys\sysroot.json" } else { 'no shared sysroot' }
+          if ($env:VS_PRESENT -eq 'true' -and (Test-Path $sys)) { Write-Host '::error::Microsoft files downloaded although VS is installed'; exit 1 }
+          $envj = Get-ChildItem "$env:USERPROFILE\.vfox", "$env:USERPROFILE\.version-fox" -Recurse -Filter mise-env.json -ErrorAction SilentlyContinue | Select-Object -First 1
+          "env json: $($envj.FullName)"; Get-Content $envj.FullName
+          $exe = Get-ChildItem (Split-Path $envj.FullName) -Recurse -Filter swift-frontend.exe | Select-Object -First 1
+          "hard links of swift-frontend.exe: $((fsutil hardlink list $exe.FullName | Measure-Object).Count)"
+      - name: Per-project version (.vfox.toml) and build, run, test through vfox exec
+        run: |
+          if ($env:VS_PRESENT -ne 'true') { . ./managers/common/ci/clean-env.ps1 }
+          $env:Path = "$env:VFOX_DIR;$env:Path"
+          $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj
+          vfox use -p "swift@$env:SWIFT_VERSION" 2>&1 | Out-Host
+          Get-Content .vfox.toml -ErrorAction SilentlyContinue
+          & "$env:GITHUB_WORKSPACE/managers/common/ci/test-swift.ps1" -Project $proj -Exec "vfox exec swift@$env:SWIFT_VERSION --"
+
+  bootstrap:
+    name: bootstrap install.ps1 ${{ matrix.arch }} (VS hidden)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      JOB_LABEL: bootstrap ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: ./managers/common/ci/hide-vs.ps1 | Out-Host
+      - name: License gate - the one-liner refuses without acceptance
+        run: |
+          . ./managers/common/ci/clean-env.ps1
+          $code = Get-Content -Raw ./managers/bootstrap/install.ps1
+          try { & ([scriptblock]::Create($code)) -ScriptUrl $env:SCRIPT_URL; Write-Host '::error::installed without acceptance'; exit 1 }
+          catch { "refused: $_" }
+          if (Test-Path "$env:LOCALAPPDATA\swift-portable\toolchains\$env:SWIFT_VERSION") { Write-Host '::error::downloaded Swift before acceptance'; exit 1 }
+      - name: irm | iex style install with acceptance
+        run: |
+          . ./managers/common/ci/clean-env.ps1
+          $env:SWIFT_PORTABLE_ACCEPT_MSVC_LICENSE = '1'
+          $code = Get-Content -Raw ./managers/bootstrap/install.ps1   # in real use: irm <url>
+          $t = Measure-Command { & ([scriptblock]::Create($code)) -SwiftVersion $env:SWIFT_VERSION -ScriptUrl $env:SCRIPT_URL | Out-Host }
+          "## bootstrap ${{ matrix.arch }}: install took $([math]::Round($t.TotalSeconds))s" >> $env:GITHUB_STEP_SUMMARY
+      - name: Fresh shell (user env from the registry only) - build, run, test
+        run: |
+          . ./managers/common/ci/fresh-env.ps1
+          ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
