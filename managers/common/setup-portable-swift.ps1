@@ -27,7 +27,7 @@
   -Part fetch-sysroot  only steps 2-3 into -SysrootDir (default <Target>\winsysroot); no Swift needed.
                        Writes <SysrootDir>\sysroot.json. License-gated like -Part sysroot.
   -Part link           steps 4-5 for the toolchain in <Target> against an existing -SysrootDir, which is
-                       left untouched: the modulemaps are mapped in with a VFS overlay stored in <Target>.
+                       only gets Swift's modulemaps copied next to its headers (or, with -ModulemapMode overlay, nothing: a VFS overlay in <Target>).
 
   This copy lives in managers/common and was adapted from mise/vfox-swift/scripts (branch exp/mise)
   and xwin/setup-portable-swift.ps1 (branch exp/xwin-sysroot).
@@ -84,7 +84,7 @@ param(
   # <Target> is short, otherwise a fresh directory under %TEMP%.
   [string]$StageDir = '',
   # Where the MSVC CRT + Windows SDK sysroot lives (default <Target>\winsysroot). A sysroot outside <Target>
-  # is shared: -Part link never writes into it (modulemaps go through an overlay in <Target>).
+  # is shared: -Part link only copies the modulemaps into it (nothing at all with -ModulemapMode overlay).
   [string]$SysrootDir = '',
   # Use an already downloaded (and verified) swift.org installer bundle instead of downloading it
   [string]$InstallerPath = '',
@@ -222,7 +222,9 @@ $doSysroot = $Part -in 'all', 'sysroot', 'fetch-sysroot'   # download the CRT + 
 $doLink = $Part -in 'all', 'sysroot', 'link'               # configure the toolchain in <Target> for a sysroot
 $sysroot = if ($SysrootDir) { [System.IO.Path]::GetFullPath($SysrootDir) } else { Join-Path $Target 'winsysroot' }
 $sharedSysroot = -not $sysroot.StartsWith($Target + '\', [System.StringComparison]::OrdinalIgnoreCase)
-if ($sharedSysroot -and $Part -eq 'link') { $ModulemapMode = 'overlay' }
+# Even with a shared sysroot the modulemaps are copied in by default (-Part link writes only these few files):
+# overlay mode crashed the asserts toolchain with a shared sysroot reached through Scoop's `current` junction
+# ("virtual path not absolute", run 45050299750); the no-asserts build was fine.
 $stats.part = $Part
 if (-not $SwiftVersion -and $doSwift) {
   $rel = Invoke-RestMethod -Uri 'https://www.swift.org/api/v1/install/releases.json'

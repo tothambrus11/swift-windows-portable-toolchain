@@ -9,7 +9,11 @@ $ErrorActionPreference = 'Stop'
 $results = [ordered]@{}
 $prefix = @($Exec -split ' ' | Where-Object { $_ })
 function X {
-  $all = @($prefix) + @($args)
+  $cmd = @($args)
+  # vfox 1.1.0 `exec` looks a bare name up in the SDK's PATH without PATHEXT (it stats <dir>\swift, not
+  # swift.exe) and then falls back to the parent's PATH: name the .exe explicitly
+  if ($prefix.Count -and $cmd[0] -in 'swift', 'swiftc') { $cmd[0] = "$($cmd[0]).exe" }
+  $all = @($prefix) + $cmd
   & $all[0] @($all | Select-Object -Skip 1)
   if ($LASTEXITCODE) { throw "exit code $LASTEXITCODE" }
 }

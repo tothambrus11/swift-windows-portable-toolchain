@@ -165,15 +165,28 @@ jobs:
           "env json: $($envj.FullName)"; Get-Content $envj.FullName
           $exe = Get-ChildItem (Split-Path $envj.FullName) -Recurse -Filter swift-frontend.exe | Select-Object -First 1
           "files in usr\bin that are hard links: $(@(Get-ChildItem $exe.DirectoryName -File | Where-Object LinkType -eq 'HardLink').Count)"
-      - name: Per-project version (.vfox.toml) and build, run, test through vfox exec
+      - name: vfox use (project, then global)
         run: |
-          if ($env:VS_PRESENT -ne 'true') { . ./managers/common/ci/clean-env.ps1 }
           $env:Path = "$env:VFOX_DIR;$env:Path"
           $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
           Set-Location $proj
-          vfox use -p "swift@$env:SWIFT_VERSION" 2>&1 | Out-Host
+          # without a shell hook vfox falls back to the global scope and opens a subshell: feed it `exit`
+          'exit' | vfox use -p "swift@$env:SWIFT_VERSION" 2>&1 | Out-Host
           Get-Content .vfox.toml -ErrorAction SilentlyContinue
-          & "$env:GITHUB_WORKSPACE/managers/common/ci/test-swift.ps1" -Project $proj -Exec "vfox exec swift@$env:SWIFT_VERSION --"
+          'exit' | vfox use -g "swift@$env:SWIFT_VERSION" 2>&1 | Out-Host
+          "user PATH: $([Environment]::GetEnvironmentVariable('Path', 'User'))"
+          "user SDKROOT: $([Environment]::GetEnvironmentVariable('SDKROOT', 'User'))"
+          $global:LASTEXITCODE = 0
+      - name: Build, run, test through vfox exec
+        run: |
+          if ($env:VS_PRESENT -ne 'true') { . ./managers/common/ci/clean-env.ps1 }
+          $env:Path = "$env:VFOX_DIR;$env:Path"
+          ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj" -Exec "vfox exec swift@$env:SWIFT_VERSION --"
+      - name: Fresh shell after `vfox use -g` (user env from the registry only) - build, run, test
+        if: ${{ !matrix.vs }}
+        run: |
+          . ./managers/common/ci/fresh-env.ps1
+          ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj-fresh"
 
   bootstrap:
     name: bootstrap install.ps1 ${{ matrix.arch }} (VS hidden)
