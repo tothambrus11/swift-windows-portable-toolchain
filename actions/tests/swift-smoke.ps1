@@ -98,6 +98,14 @@ if ($Cases -contains 'foundation') {
       $txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($lib.FullName))
       "$($lib.FullName): $($lib.Length) bytes, mentions swift_Builtin_float.dll: $($txt.Contains('swift_Builtin_float.dll')), .obj members: $(([regex]::Matches($txt, '[\w.-]+\.obj')).Count)"
     }
+    "delayimp.lib in LIB: $(@($env:LIB -split ';' | Where-Object { $_ -and (Test-Path (Join-Path $_ 'delayimp.lib')) }) -join ', ')"
+    foreach ($v in @(@('/opt:ref'), @('/opt:ref,icf', '/opt:noicf'), @('/delayload:swift_Builtin_float.dll', 'delayimp.lib'))) {
+      $xl = @(); foreach ($x in $v) { $xl += @('-Xlinker', $x) }
+      Remove-Item fdemo-x.exe -ErrorAction SilentlyContinue
+      $o = swiftc foundation.swift -o fdemo-x.exe @xl 2>&1 | Out-String
+      $r = if (Test-Path fdemo-x.exe) { (& .\fdemo-x.exe | Out-String).Trim().Split("`n")[-1] + " exit=$LASTEXITCODE; imports: $((Get-PEImports (Resolve-Path .\fdemo-x.exe)) -match 'Builtin' -join ',')" } else { "link failed: $($o.Substring(0, [math]::Min(600, $o.Length)))" }
+      "variant [$($v -join ' ')]: $r"
+    }
     swiftc -v foundation.swift -o fdemo-v.exe 2>&1 | Select-String -Pattern 'clang.*-o fdemo-v|lld|link' | Select-Object -Last 2 | ForEach-Object { "$_".Substring(0, [math]::Min(1500, "$_".Length)) }
   } ''
 }
