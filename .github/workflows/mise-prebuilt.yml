@@ -26,10 +26,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
-            --prerelease --target "$GITHUB_SHA" --title "Swift $SWIFT_VERSION portable (Windows, experimental)" \
+            --prerelease --target "$GITHUB_SHA" --title "Swift $SWIFT_VERSION portable (Windows, experimental)" --notes "(building)"
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --prerelease \
             --notes "Experimental repackaging of the official swift.org Swift $SWIFT_VERSION Windows toolchain (no-asserts build; components bld, cli, rtl, windows; host-arch SDK only; identical binaries hard-linked), for the mise/vfox plugin in mise/vfox-swift on branch exp/mise (source = \"prebuilt\").
 
-          Swift is Apache-2.0 with the Runtime Library Exception; LICENSE.txt and NOTICE.txt are included in each archive. **No Microsoft MSVC or Windows SDK files are included**; the plugin downloads them from Microsoft on your machine only after you accept their licenses.
+          Swift is Apache-2.0 with the Runtime Library Exception; LICENSE.txt, LICENSE-LLVM.txt and a list of the third-party license files in the tree (NOTICE-files.txt) are included in each archive. **No Microsoft MSVC or Windows SDK files are included**; the plugin downloads them from Microsoft on your machine only after you accept their licenses.
 
           Built by .github/workflows/mise-prebuilt.yml."
 
@@ -59,15 +60,24 @@ jobs:
           Remove-Item -Force "$dir\mise-env.json", "$dir\activate.ps1", "$dir\activate.bat", "$dir\setup-stats-swift.json" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$dir\downloads", "$dir\_" -ErrorAction SilentlyContinue
           $tag = "swift-$env:SWIFT_VERSION-RELEASE"
-          foreach ($f in 'LICENSE.txt', 'NOTICE.txt') {
-            curl.exe -fsSL -o "$dir\$f" "https://raw.githubusercontent.com/swiftlang/swift/$tag/$f"
+          # swiftlang/swift has no NOTICE file; ship Swift's and LLVM's license texts and list the
+          # license files that the installer itself put into the tree
+          $lic = @{ 'LICENSE.txt' = "https://raw.githubusercontent.com/swiftlang/swift/$tag/LICENSE.txt"
+                    'LICENSE-LLVM.txt' = "https://raw.githubusercontent.com/swiftlang/llvm-project/$tag/llvm/LICENSE.TXT" }
+          foreach ($f in $lic.Keys) {
+            curl.exe -fsSL -o "$dir\$f" $lic[$f]
             if ($LASTEXITCODE) { throw "failed to fetch $f" }
           }
+          $inTree = Get-ChildItem "$dir\Swift" -Recurse -File | Where-Object { $_.Name -match '(?i)licen[cs]e|notice|copying' } |
+            ForEach-Object { $_.FullName.Substring($dir.Length + 1) }
+          "license files shipped inside the toolchain:"; $inTree
+          @('Third-party license files shipped inside the toolchain (from the official installer):') + $inTree | Set-Content "$dir\NOTICE-files.txt"
           @(
             "Swift $env:SWIFT_VERSION for Windows ${{ matrix.arch }}: repackaged from the official swift.org installer",
             "(https://download.swift.org/swift-$env:SWIFT_VERSION-release/), no-asserts toolchain, MSIs bld/cli/rtl/windows",
             "(+ FoundationXML/swiftRegexBuilder assemblies from ide), host-arch SDK only, identical files hard-linked.",
-            'Swift is licensed under the Apache License v2.0 with Runtime Library Exception: see LICENSE.txt and NOTICE.txt.',
+            'Swift is licensed under the Apache License v2.0 with Runtime Library Exception: see LICENSE.txt,',
+            'LICENSE-LLVM.txt (Apache-2.0 with LLVM exceptions) and the third-party license files listed in NOTICE-files.txt.',
             'This archive contains no Microsoft MSVC or Windows SDK files.',
             "Built from $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commit/$env:GITHUB_SHA"
           ) | Set-Content "$dir\README-portable.txt"

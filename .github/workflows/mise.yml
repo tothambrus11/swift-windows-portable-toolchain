@@ -130,6 +130,65 @@ jobs:
           mise x -- swift run -c release FoundationDemo || exit /b 1
           mise x -- swift test || exit /b 1
 
+  prebuilt:
+    name: windows ${{ matrix.arch }} prebuilt archive (VS hidden)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      JOB_LABEL: windows ${{ matrix.arch }} prebuilt
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: ./mise/ci/hide-vs.ps1 | Out-Host
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+      - name: Wait for the pre-release asset (built by mise-prebuilt.yml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "swift-$env:SWIFT_VERSION-windows-${{ matrix.arch }}-portable.tar.xz"
+          for ($i = 0; $i -lt 60; $i++) {
+            $names = gh release view "swift-$env:SWIFT_VERSION-portable.0" -R $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name' 2>$null
+            if ($names -contains $name) { "found $name"; exit 0 }
+            Start-Sleep 30
+          }
+          Write-Host "::error::$name not published"; exit 1
+      - name: Install from the GitHub pre-release (mise downloads + verifies + unpacks the tar.xz)
+        run: |
+          "MISE_BIN_DIR=$(Split-Path (Get-Command mise).Source)" >> $env:GITHUB_ENV
+          $miseDir = Split-Path (Get-Command mise).Source
+          . ./mise/ci/clean-env.ps1; $env:Path = "$miseDir;$env:Path"
+          mise plugins link swift-portable "$env:GITHUB_WORKSPACE\mise\vfox-swift"
+          $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj
+          Set-Content mise.toml "[tools]`nswift-portable = { version = `"$env:SWIFT_VERSION`", source = `"prebuilt`", accept_msvc_license = true }"
+          $t = Measure-Command { mise install 2>&1 | Out-Host }
+          if ($LASTEXITCODE) { exit 1 }
+          "mise install took $([math]::Round($t.TotalSeconds))s"
+          "## prebuilt ${{ matrix.arch }}: mise install took $([math]::Round($t.TotalSeconds))s" >> $env:GITHUB_STEP_SUMMARY
+          $root = mise where swift-portable
+          Get-Content "$root\mise-env.json"
+          Get-ChildItem $root | Format-Table Name, Length | Out-Host
+          $exe = Get-ChildItem "$root\Swift\Toolchains" -Recurse -Filter swift-frontend.exe | Select-Object -First 1
+          "hard links of swift-frontend.exe: $((fsutil hardlink list $exe.FullName | Measure-Object).Count)"
+      - name: Build + run + test through mise exec
+        run: |
+          . ./mise/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          ./mise/ci/test-mise-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
+
   vs-present:
     name: windows x64 (VS present, no license acceptance)
     runs-on: windows-latest
