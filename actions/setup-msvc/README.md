@@ -45,18 +45,26 @@ The replacement:
         uses: tothambrus11/swift-windows-portable-toolchain/actions/setup-msvc@<sha>
         with:
           winsdk: "10.0.26100.0"
+          msvc-version: "14.44"  # see below: VS 2026's default 14.52 STL rejects Swift 6.2's clang 19
           accept-license: true   # only used if the runner's VS lacks the toolset/SDK (portable fallback)
 ```
 
-How it behaves:
-- **On `windows-2025`** VS 2022 has SDK 10.0.26100.0, so the action picks installed mode and produces the
-  same environment as gha-setup-vsdevenv: the same `VsDevCmd.bat -host_arch -arch -winsdk` call, with new
-  variables and `Path` exported.
-- **Without VS**, it falls back to portable mode, and the SwiftPM jobs work unchanged.
-- **The CMake job** declares `LANGUAGES C CXX Swift`. Without VS there is no `cl.exe`, so add
-  `export-cc: clang-cl` to that job only. It exports `CC`/`CXX` pointing at the Swift toolchain's
-  `clang-cl.exe`. CMake then uses `clang-cl` + `lld-link`, and `rc.exe`/`mt.exe` come from the NuGet SDK.
-  Don't set `export-cc` for SwiftPM jobs: SwiftPM reads `CC` as its clang.
+How it behaves, as tested in `.github/workflows/setup-msvc.yml`:
+- **On `windows-2025`** the runner now has VS 2026 with MSVC 14.29, 14.44 and **14.52 (default)**, plus SDK
+  10.0.26100.0. The action picks installed mode and runs the same `VsDevCmd.bat -host_arch -arch -winsdk
+  [-vcvars_ver]` call as gha-setup-vsdevenv, exporting the new variables and `Path`.
+- **Why pin 14.44.** With the default toolset (14.52, exactly what gha-setup-vsdevenv gives today), Hylo's
+  C++ shims fail with `STL1000: Unexpected compiler version, expected Clang 22 or newer`, because Swift
+  6.2.4 bundles clang 19. With `msvc-version: "14.44"`, Hylo's SwiftPM release build plus all 734 tests pass.
+- **Without VS**, the action falls back to portable mode, and the SwiftPM job works unchanged. Hylo's release
+  build plus 734 tests passed with 14.44, and also with `latest`. With `latest`, the action adds
+  `-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH` to `clang.cfg` automatically.
+- **CMake job:** Hylo's CMake picks the Swift toolchain's GNU-style `clang` for C/C++ (also with VS present),
+  so it needs no `export-cc`. In portable mode it gets further than with VS: the swift-collections static
+  library links through the `link.exe` → lld-link shim, where VS `link.exe` fails with LNK1181. It then
+  stops at Hylo's post-link `editbin.exe` call. `editbin` is a VS binary that portable mode does not provide.
+- **`export-cc: clang-cl`** is for CMake projects that would otherwise look for `cl.exe`. Don't set it for
+  SwiftPM jobs: SwiftPM reads `CC` as its clang.
 
 ## Inputs
 
