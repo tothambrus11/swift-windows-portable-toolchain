@@ -271,32 +271,54 @@ jobs:
       - uses: actions/checkout@v4
       - name: Hide Visual Studio, Build Tools and Windows SDK
         run: ./managers/common/ci/hide-vs.ps1 | Out-Host
-      - name: Install the official (asserts) toolchain with the bootstrapper, no PATH changes
+      - name: Install the official (asserts) toolchain with the bootstrapper (user PATH + SDKROOT)
         run: |
           . ./managers/common/ci/clean-env.ps1
           $code = Get-Content -Raw ./managers/bootstrap/install.ps1
-          & ([scriptblock]::Create($code)) -SwiftVersion $env:SWIFT_VERSION -Source official -AcceptMsvcLicense -NoModifyPath -ScriptUrl $env:SCRIPT_URL | Out-Host
-      - name: Compile through real paths vs. junctions
+          & ([scriptblock]::Create($code)) -SwiftVersion $env:SWIFT_VERSION -Source official -AcceptMsvcLicense -ScriptUrl $env:SCRIPT_URL | Out-Host
+      - name: Compile with real paths, junctions, symlinks, the fresh-shell environment
         run: |
+          'HKCU\Environment:'; Get-Item 'HKCU:\Environment' | Select-Object -ExpandProperty Property | ForEach-Object { "  $_ = $([Environment]::GetEnvironmentVariable($_, 'User'))" }
           . ./managers/common/ci/clean-env.ps1
           $base = $env:PATH
           $tc = "$env:LOCALAPPDATA\swift-portable\toolchains\$env:SWIFT_VERSION"
           New-Item -ItemType Junction -Path C:\jtc -Target $tc | Out-Null
+          cmd /c mklink /d C:\stc "$tc" | Out-Host
           $rel = @{
             bin = (Get-ChildItem "$tc\Swift\Toolchains" -Directory)[0].Name
             rt  = (Get-ChildItem "$tc\Swift\Runtimes" -Directory)[0].Name
             pl  = (Get-ChildItem "$tc\Swift\Platforms" -Directory)[0].Name }
+          "toolchain dir: $($rel.bin)"
           Copy-Item managers/common/ci/tests/foundation.swift "$env:RUNNER_TEMP\f.swift"
           Set-Location $env:RUNNER_TEMP
           $rows = @()
-          foreach ($c in @(@{ n = 'toolchain real, SDKROOT real'; t = $tc; s = $tc }, @{ n = 'toolchain junction, SDKROOT real'; t = 'C:\jtc'; s = $tc },
-                           @{ n = 'toolchain real, SDKROOT junction'; t = $tc; s = 'C:\jtc' }, @{ n = 'toolchain junction, SDKROOT junction'; t = 'C:\jtc'; s = 'C:\jtc' })) {
-            $env:PATH = "$($c.t)\Swift\Toolchains\$($rel.bin)\usr\bin;$($c.t)\Swift\Runtimes\$($rel.rt)\usr\bin;$base"
-            $env:SDKROOT = "$($c.s)\Swift\Platforms\$($rel.pl)\Windows.platform\Developer\SDKs\Windows.sdk\"
+          function Test-Case($n) {
             $out = swiftc f.swift -o p.exe 2>&1 | Out-String
-            $r = if ($LASTEXITCODE -eq 0) { 'OK' } elseif ($out -match 'virtual path not absolute') { 'ASSERT: virtual path not absolute' } else { "FAIL: $($out.Substring(0, [math]::Min(200, $out.Length)))" }
-            $rows += "| $($c.n) | $r |"
+            $r = if ($LASTEXITCODE -eq 0) { 'OK' } elseif ($out -match 'virtual path not absolute') { 'ASSERT: virtual path not absolute' } else { "FAIL: $($out.Substring(0, [math]::Min(300, $out.Length)) -replace '\r?\n', ' ')" }
+            $script:rows += "| $n | $r |"
           }
-          $md = "### junction probe (asserts toolchain, Swift $env:SWIFT_VERSION)`n| case | swiftc f.swift |`n|---|---|`n" + ($rows -join "`n")
+          foreach ($c in @(@{ n = 'real'; t = $tc }, @{ n = 'junction'; t = 'C:\jtc' }, @{ n = 'symlink'; t = 'C:\stc' })) {
+            $env:PATH = "$($c.t)\Swift\Toolchains\$($rel.bin)\usr\bin;$($c.t)\Swift\Runtimes\$($rel.rt)\usr\bin;$base"
+            $env:SDKROOT = "$($c.t)\Swift\Platforms\$($rel.pl)\Windows.platform\Developer\SDKs\Windows.sdk\"
+            Test-Case "clean env, toolchain + SDKROOT through $($c.n) path"
+          }
+          # the fresh-shell environment (HKCU vars + user PATH), real paths as the bootstrapper wrote them
+          . ./managers/common/ci/fresh-env.ps1
+          Test-Case 'fresh-shell env (bootstrapper wrote real paths to HKCU)'
+          $fresh = $env:PATH
+          # same, minus the runner's own user PATH entries
+          $env:PATH = (($fresh -split ';') | Where-Object { $_ -notmatch '\\\.dotnet\\tools|\\\.cargo\\bin|WindowsApps' }) -join ';'
+          Test-Case 'fresh-shell env without .dotnet\tools, .cargo\bin, WindowsApps on PATH'
+          $env:PATH = $fresh
+          # renamed version directories (what -StableNames does) through a symlink, like vfox's sdks\ link
+          foreach ($sub in 'Toolchains', 'Runtimes', 'Platforms') { $d = (Get-ChildItem "$tc\Swift\$sub" -Directory)[0]; Rename-Item $d.FullName 'current' }
+          . ./managers/common/ci/clean-env.ps1
+          $base = $env:PATH
+          foreach ($c in @(@{ n = 'real'; t = $tc }, @{ n = 'symlink'; t = 'C:\stc' }, @{ n = 'junction'; t = 'C:\jtc' })) {
+            $env:PATH = "$($c.t)\Swift\Toolchains\current\usr\bin;$($c.t)\Swift\Runtimes\current\usr\bin;$base"
+            $env:SDKROOT = "$($c.t)\Swift\Platforms\current\Windows.platform\Developer\SDKs\Windows.sdk\"
+            Test-Case "clean env, renamed dirs, through $($c.n) path"
+          }
+          $md = "### probe (asserts toolchain, Swift $env:SWIFT_VERSION)`n| case | swiftc f.swift |`n|---|---|`n" + ($rows -join "`n")
           $md; $md >> $env:GITHUB_STEP_SUMMARY
           $global:LASTEXITCODE = 0
