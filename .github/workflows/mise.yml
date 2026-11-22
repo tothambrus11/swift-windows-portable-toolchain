@@ -65,7 +65,7 @@ jobs:
           mise ls-remote $env:TOOL | Select-Object -Last 5
           # Diagnostics only: does a plugin linked under the core tool's name ("swift") take over?
           # (Run 45040292131: `mise use swift@6.4.3` still ran core:swift and panicked "not yet implemented: install from exe")
-          mise plugins link swift "$env:GITHUB_WORKSPACE\misefox-swift"
+          mise plugins link swift "$env:GITHUB_WORKSPACE/mise/vfox-swift"
           mise tool swift
           mise tool swift --backend
           mise plugins uninstall swift
