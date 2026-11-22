@@ -128,6 +128,48 @@ function M.macos_url(version)
         .. "-RELEASE/swift-" .. version .. "-RELEASE-osx.pkg"
 end
 
+-- Windows: "official" (default) unpacks swift.org's installer bundle; "prebuilt" downloads a
+-- repackaged Swift-only archive from a GitHub release.
+function M.source(options)
+    local s = (options or {}).source or os.getenv("SWIFT_PORTABLE_SOURCE") or "official"
+    if s ~= "official" and s ~= "prebuilt" then
+        error('swift: tool option source must be "official" or "prebuilt", got "' .. tostring(s) .. '"')
+    end
+    return s
+end
+
+M.prebuilt_repo = "tothambrus11/swift-windows-portable-toolchain"
+
+-- URL + sha256 of the prebuilt archive, from the GitHub release API (asset "digest").
+function M.prebuilt_asset(version, options)
+    local http = require("http")
+    local json = require("json")
+    options = options or {}
+    local repo = options.prebuilt_repo or M.prebuilt_repo
+    local tag = options.prebuilt_tag or ("swift-" .. version .. "-portable.0")
+    local name = "swift-" .. version .. "-windows-" .. M.win_arch() .. "-portable.tar.xz"
+    local api = "https://api.github.com/repos/" .. repo .. "/releases/tags/" .. tag
+    local resp = http.get({ url = api })
+    if resp.status_code ~= 200 then
+        error("swift: no prebuilt release " .. tag .. " in " .. repo .. " (HTTP " .. resp.status_code
+            .. "); use source = \"official\"")
+    end
+    for _, a in ipairs(json.decode(resp.body).assets or {}) do
+        if a.name == name then
+            local sha = type(a.digest) == "string" and a.digest:match("^sha256:(%x+)$") or nil
+            if sha == nil then
+                local s = http.get({ url = a.browser_download_url .. ".sha256" })
+                sha = s.status_code == 200 and s.body:match("^(%x+)") or nil
+            end
+            if sha == nil then
+                error("swift: no sha256 for " .. name)
+            end
+            return a.browser_download_url, sha
+        end
+    end
+    error("swift: release " .. tag .. " has no asset " .. name)
+end
+
 -- Shell-quote for cmd.exe (Windows) / sh
 function M.q(s)
     if RUNTIME.osType == "windows" then

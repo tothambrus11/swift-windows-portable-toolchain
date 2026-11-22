@@ -20,6 +20,7 @@
   -Part swift   only steps 1 and 5 (Swift is Apache-2.0: no Microsoft license involved)
   -Part sysroot only steps 2-5, on top of an existing -Part swift install in <Target>
   -Part all     everything (default)
+  -Part env     only step 5, for a toolchain unpacked from a prebuilt archive (paths are absolute)
 
   This copy lives in the mise/vfox plugin (mise/vfox-swift/scripts) and was adapted from
   xwin/setup-portable-swift.ps1 on the exp/xwin-sysroot branch.
@@ -71,7 +72,7 @@ param(
   # Extract SDKs for Android etc. as well (skipped by default)
   [switch]$AllSdks,
   # What to set up (see .DESCRIPTION)
-  [ValidateSet('all', 'swift', 'sysroot')][string]$Part = 'all',
+  [ValidateSet('all', 'swift', 'sysroot', 'env')][string]$Part = 'all',
   # Short staging directory for `msiexec /a` (deep paths fail with error 1603). Default: <Target>\_ when
   # <Target> is short, otherwise a fresh directory under %TEMP%.
   [string]$StageDir = ''
@@ -197,14 +198,16 @@ $stats = [ordered]@{ arch = $Arch; components = ($Components -join ',') }
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
 # ---------------------------------------------------------------- versions + licenses (before any big download)
-$doSwift = $Part -ne 'sysroot'
-$doSysroot = $Part -ne 'swift'
+$doSwift = $Part -in 'all', 'swift'
+$doSysroot = $Part -in 'all', 'sysroot'
 $stats.part = $Part
 if (-not $SwiftVersion -and $doSwift) {
   $rel = Invoke-RestMethod -Uri 'https://www.swift.org/api/v1/install/releases.json'
   $SwiftVersion = $rel[-1].name
 }
-if (-not $doSysroot) {
+if ($Part -eq 'env') {
+  Write-Host "Writing the environment files for the toolchain in $Target"
+} elseif (-not $doSysroot) {
   Write-Host ''
   Write-Host "Installing Swift $SwiftVersion (swift.org, Apache 2.0 with Runtime Library Exception): https://swift.org/LICENSE.txt"
   Write-Host 'The Microsoft C/C++ runtime and Windows SDK are NOT downloaded in this step.'

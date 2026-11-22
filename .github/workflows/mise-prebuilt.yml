@@ -1,0 +1,96 @@
+name: mise-prebuilt
+
+# Repackages the official swift.org Windows toolchain (Apache-2.0) into a Swift-only archive and
+# publishes it as a GitHub *pre-release*. It contains no Microsoft MSVC / Windows SDK files: those are
+# fetched on the user's machine by the plugin after license acceptance.
+# Runs only when this file changes (workflow_dispatch needs the file on the default branch).
+on:
+  push:
+    branches: [exp/mise]
+    paths: [.github/workflows/mise-prebuilt.yml]
+  workflow_dispatch:
+
+env:
+  SWIFT_VERSION: '6.4.3'
+  TAG: swift-6.4.3-portable.0
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the pre-release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" --title "Swift $SWIFT_VERSION portable (Windows, experimental)" \
+            --notes "Experimental repackaging of the official swift.org Swift $SWIFT_VERSION Windows toolchain (no-asserts build; components bld, cli, rtl, windows; host-arch SDK only; identical binaries hard-linked), for the mise/vfox plugin in mise/vfox-swift on branch exp/mise (source = \"prebuilt\").
+
+          Swift is Apache-2.0 with the Runtime Library Exception; LICENSE.txt and NOTICE.txt are included in each archive. **No Microsoft MSVC or Windows SDK files are included**; the plugin downloads them from Microsoft on your machine only after you accept their licenses.
+
+          Built by .github/workflows/mise-prebuilt.yml."
+
+  package:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the official toolchain (Swift only)
+        run: |
+          $name = "swift-$env:SWIFT_VERSION-windows-${{ matrix.arch }}-portable"
+          $dir = "C:\sp\$name"
+          & ./mise/vfox-swift/scripts/setup-portable-swift.ps1 -Part swift -NoAsserts -Target $dir -SwiftVersion $env:SWIFT_VERSION -Arch ${{ matrix.arch }} | Out-Host
+          Get-Content "$dir\setup-stats-swift.json"
+          Remove-Item -Force "$dir\mise-env.json", "$dir\activate.ps1", "$dir\activate.bat", "$dir\setup-stats-swift.json" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$dir\downloads", "$dir\_" -ErrorAction SilentlyContinue
+          $tag = "swift-$env:SWIFT_VERSION-RELEASE"
+          foreach ($f in 'LICENSE.txt', 'NOTICE.txt') {
+            curl.exe -fsSL -o "$dir\$f" "https://raw.githubusercontent.com/swiftlang/swift/$tag/$f"
+            if ($LASTEXITCODE) { throw "failed to fetch $f" }
+          }
+          @(
+            "Swift $env:SWIFT_VERSION for Windows ${{ matrix.arch }}: repackaged from the official swift.org installer",
+            "(https://download.swift.org/swift-$env:SWIFT_VERSION-release/), no-asserts toolchain, MSIs bld/cli/rtl/windows",
+            "(+ FoundationXML/swiftRegexBuilder assemblies from ide), host-arch SDK only, identical files hard-linked.",
+            'Swift is licensed under the Apache License v2.0 with Runtime Library Exception: see LICENSE.txt and NOTICE.txt.',
+            'This archive contains no Microsoft MSVC or Windows SDK files.',
+            "Built from $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commit/$env:GITHUB_SHA"
+          ) | Set-Content "$dir\README-portable.txt"
+          "NAME=$name" >> $env:GITHUB_ENV
+          $s = (Get-ChildItem $dir -Recurse -File | Measure-Object Length -Sum).Sum
+          "on disk (hard links counted per name): $([math]::Round($s/1MB)) MB"
+      - name: Pack tar.xz (in-box bsdtar keeps hard links)
+        run: |
+          $tar = "$env:SystemRoot\System32\tar.exe"
+          $out = "C:\sp\$env:NAME.tar.xz"
+          $t = Measure-Command { & $tar --options 'xz:threads=0' -cJf $out -C C:\sp $env:NAME }
+          if ($LASTEXITCODE -or -not (Test-Path $out)) {
+            Write-Host 'multithreaded xz not supported, retrying single-threaded'
+            $t = Measure-Command { & $tar -cJf $out -C C:\sp $env:NAME }
+          }
+          "packed in $([math]::Round($t.TotalSeconds))s: $([math]::Round((Get-Item $out).Length/1MB,1)) MB"
+          $h = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLowerInvariant()
+          "$h  $env:NAME.tar.xz" | Set-Content -NoNewline "$out.sha256"
+          Get-Content "$out.sha256"
+          $links = @(& $tar -tvf $out | Select-String ' link to ')
+          "hard-link entries: $($links.Count)"; $links | Select-Object -First 5
+      - name: Upload to the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload $env:TAG "C:\sp\$env:NAME.tar.xz" "C:\sp\$env:NAME.tar.xz.sha256" --clobber -R $env:GITHUB_REPOSITORY

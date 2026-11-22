@@ -56,7 +56,11 @@ local function windows(ctx)
     end
 
     local envjson = swiftorg.read_env_json(root)
-    if envjson == nil then
+    if envjson == nil and file.exists(file.join_path(root, "Swift", "Toolchains")) then
+        -- unpacked by mise from the prebuilt archive: only record this location's paths
+        run(base .. " -Part env")
+        envjson = swiftorg.read_env_json(root)
+    elseif envjson == nil then
         run(base .. " -Part swift -SwiftVersion " .. ctx.runtimeVersion .. extra)
         envjson = swiftorg.read_env_json(root)
     else
