@@ -45,8 +45,9 @@ param(
   [string]$VsChannelUrl = 'https://aka.ms/vs/17/release/channel',
   # e.g. 14.44.17.14 (VS package version); default = newest in the channel manifest
   [string]$CrtVersion = '',
-  # Also fetch the static CRT (libcmt/libcpmt/libvcruntime, +50 MB) - not needed by Swift (uses /MD)
-  [switch]$IncludeStaticCrt,
+  # Skip the static CRT (libcmt/libcpmt/libvcruntime, +51 MB download). Swift itself links /MD and does not need it,
+  # but plain `clang foo.c` does (default /MT; the GNU-style driver always adds -defaultlib:libcmt when linking).
+  [switch]$NoStaticCrt,
   # Windows SDK NuGet version (e.g. 10.0.28000.2957) or prefix filter (-SdkVersion 10.0.26100)
   [string]$NugetSdkVersion = '',
   [string]$SdkVersion = '',
@@ -373,7 +374,7 @@ if ($CrtSource -eq 'vsmanifest') {
     $CrtVersion = "$(@($vers)[-1])"
   }
   $pkgs = @("Microsoft.VC.$CrtVersion.CRT.Headers.base", "Microsoft.VC.$CrtVersion.CRT.$vsArch.Store.base")
-  if ($IncludeStaticCrt) { $pkgs += "Microsoft.VC.$CrtVersion.CRT.$vsArch.Desktop.base" }
+  if (-not $NoStaticCrt) { $pkgs += "Microsoft.VC.$CrtVersion.CRT.$vsArch.Desktop.base" }
   $crtBytes = 0
   foreach ($id in $pkgs) {
     $mt = [regex]::Match($text, '"(https://[^"]+/([0-9a-f]{64})/' + [regex]::Escape($id) + '\.vsix)"', $rxOpt)
@@ -390,6 +391,11 @@ if ($CrtSource -eq 'vsmanifest') {
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed for $id" }
   }
   # Store.base also carries UWP/store variants that Swift never uses
+  # PDBs of the static libs (~150 MB) and, unless asked for, the debug CRT variants are not needed
+  Get-ChildItem (Join-Path $sysroot 'VC\Tools\MSVC') -Recurse -File -Filter *.pdb | Remove-Item -Force
+  if (-not $IncludeDebugLibs) {
+    Get-ChildItem (Join-Path $sysroot 'VC\Tools\MSVC') -Recurse -File -Filter *.lib | Where-Object { $_.BaseName -match '^(libcmtd|libcpmtd\d?|libvcruntimed|libconcrtd\d?|msvcrtd|msvcprtd|vcruntimed|concrtd|libompd|vcompd|vcampd|comsuppd|comsuppwd|msvcmrtd.*|ptrustmd)$' } | Remove-Item -Force
+  }
   Get-ChildItem (Join-Path $sysroot 'VC\Tools\MSVC') -Recurse -Directory | Where-Object { $_.Name -in 'store', 'uwp', 'enclave', 'onecore' } |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   $stats.crt_source = 'vsmanifest'
@@ -495,8 +501,6 @@ foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
   Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value @(
     '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
     '-fuse-ld=lld',
-    # Swift links the DLL CRT (/MD); make plain C/C++ compiles do the same (clang's default /MT needs the static CRT)
-    '-fms-runtime-lib=dll',
     # NB: backslash is an escape character in clang config files -> double it. Do NOT use forward slashes:
     # a forward-slash sysroot crashes swift-frontend's VFS overlay ("Paths should not contain traversal components").
     "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '\\'))`"")

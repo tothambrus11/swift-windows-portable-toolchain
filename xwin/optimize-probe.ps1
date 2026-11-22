@@ -92,3 +92,16 @@ if ($nm) {
 
 # Which Foundation.swiftmodule does the compiler load?
 Show 'module loading trace (-Onone)' { swiftc -Onone -typecheck repro.swift -Xfrontend -debug-time-function-bodies 2>&1 | Out-Null; swiftc -typecheck repro.swift -Rmodule-loading 2>&1 | Select-String 'Foundation' | Select-Object -First 8 }
+
+# Root cause check: an executable named foundation.exe makes lld-link write foundation.lib/.exp (its import library)
+# into the current directory; later links resolve the autolinked "Foundation.lib" (case-insensitive) from the
+# current directory first -> the SDK's Foundation.lib is shadowed -> undefined Foundation symbols.
+New-Item -ItemType Directory -Force "$Work\shadow" | Out-Null
+Copy-Item repro.swift "$Work\shadow\"
+Push-Location "$Work\shadow"
+Show 'shadow 1: build foundation.exe (look for foundation.lib)' { swiftc repro.swift -o foundation.exe; Get-ChildItem foundation.* | ForEach-Object Name }
+Show 'shadow 2: -O link of another program in the same dir' { swiftc -O repro.swift -o other1.exe; if ($?) { .\other1.exe } }
+Show 'shadow 3: -Onone link of another program in the same dir' { swiftc -Onone repro.swift -o other0.exe; if ($?) { .\other0.exe } }
+Show 'shadow 4: after deleting foundation.lib' { Remove-Item foundation.lib, foundation.exp -ErrorAction SilentlyContinue; swiftc -O repro.swift -o other2.exe; if ($?) { .\other2.exe } }
+Show 'shadow 5: -Xlinker /noimplib prevents it' { swiftc repro.swift -o foundation.exe -Xlinker /noimplib; Get-ChildItem foundation.* | ForEach-Object Name; swiftc -O repro.swift -o other3.exe; if ($?) { .\other3.exe } }
+Pop-Location

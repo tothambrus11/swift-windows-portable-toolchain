@@ -65,7 +65,7 @@ $SdkFlags = @('-windows-sdk-root', $kits, '-windows-sdk-version', $sdkVer, '-vis
 
 # ---- main path: no extra flags at all (activate.ps1 env + modulemaps in sysroot + clang.cfg)
 Invoke-Case 'a-hello-swiftc' { Run swiftc hello.swift -o hello.exe; Run .\hello.exe } 'Hello from portable Swift!'
-Invoke-Case 'b-foundation-swiftc' { Run swiftc foundation.swift -o foundation.exe; Run .\foundation.exe } 'FOUNDATION OK'
+Invoke-Case 'b-foundation-swiftc' { Run swiftc foundation.swift -o fdemo.exe; Run .\fdemo.exe } 'FOUNDATION OK'
 Invoke-Case 'b2-foundation-swiftc-O' { Run swiftc -O foundation.swift -o foundation-o.exe; Run .\foundation-o.exe } 'FOUNDATION OK'
 Invoke-Case 'b3-foundation-swiftc-O-nocmo' { Run swiftc -O -Xfrontend -disable-cmo foundation.swift -o foundation-o2.exe; Run .\foundation-o2.exe } 'FOUNDATION OK'
 Invoke-Case 'b4-foundation-swiftc-Osize' { Run swiftc -Osize foundation.swift -o foundation-os.exe; Run .\foundation-os.exe } 'FOUNDATION OK'
@@ -131,7 +131,9 @@ Invoke-Case 'v7-flags-default-setup' { Run swiftc @SdkFlags -Rmodule-interface-r
 # minimal crash repro without any cfg: plain forward-slash -Xcc header search path + -windows-sdk-root
 Set-Cfg @('-fuse-ld=lld')
 Invoke-Case 'v8-crash-repro-Xcc-isystem-fwdslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$($kits.Replace('\', '/'))/Include/$sdkVer/ucrt" winsdk.swift -o v8.exe } 'never'
-Invoke-Case 'v9-crash-repro-Xcc-isystem-backslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$kits\Include\$sdkVer\ucrt" winsdk.swift -o v9.exe; Run .\v9.exe } 'WINSDK OK'
+Invoke-Case 'v10-crash-repro-Xcc-winsysroot-fwdslash' { Run swiftc @SdkFlags -Xcc -Xmicrosoft-windows-sys-root -Xcc $sysFwd hello.swift -o v10.exe } 'never'
+Invoke-Case 'v11-Xcc-winsysroot-backslash' { Run swiftc @SdkFlags -Xcc -Xmicrosoft-windows-sys-root -Xcc $sysroot hello.swift -o v11.exe; Run .\v11.exe } 'Hello'
+Invoke-Case 'v12-crash-repro-no-flags-ivfsoverlay-empty' { Set-Content "$Root\empty-overlay.yaml" '{"version":0,"roots":[]}'; Run swiftc -Xcc -ivfsoverlay -Xcc "$Root\empty-overlay.yaml" -Xcc -Xmicrosoft-windows-sys-root -Xcc $sysFwd hello.swift -o v12.exe } 'never'Invoke-Case 'v9-crash-repro-Xcc-isystem-backslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$kits\Include\$sdkVer\ucrt" winsdk.swift -o v9.exe; Run .\v9.exe } 'WINSDK OK'
 Restore-Cfg
 
 # ---- alternative to copying modulemaps: a VFS overlay referenced from clang.cfg

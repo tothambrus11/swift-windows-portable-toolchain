@@ -19,10 +19,11 @@ try {
   swift run FoundationDemo; if ($LASTEXITCODE -ne 0) { throw 'swift run failed' }
   swift test; if ($LASTEXITCODE -ne 0) { throw 'swift test failed' }
   Write-Host 'NONADMIN OK'
+  $rc = 0
 } catch {
   Write-Host "NONADMIN FAILED: $_"
-  Stop-Transcript | Out-Null
-  exit 1
+  $rc = 1
 }
 Stop-Transcript | Out-Null
-exit 0
+Set-Content -Path "$Log.done" -Value $rc
+exit $rc
