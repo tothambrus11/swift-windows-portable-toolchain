@@ -1,0 +1,185 @@
+name: mise
+
+on:
+  push:
+    branches: [exp/mise]
+  workflow_dispatch:
+    inputs:
+      swift_version:
+        description: 'Swift version'
+        required: false
+        default: '6.4.3'
+
+env:
+  SWIFT_VERSION: ${{ github.event.inputs.swift_version || '6.4.3' }}
+
+jobs:
+  windows:
+    name: windows ${{ matrix.arch }} (VS hidden, plugin as "${{ matrix.tool }}")
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            tool: swift-portable
+          - runner: windows-11-arm
+            arch: arm64
+            tool: swift        # shadows mise's core swift (which has no Windows support)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      JOB_LABEL: windows ${{ matrix.arch }}
+      TOOL: ${{ matrix.tool }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: ./mise/ci/hide-vs.ps1 | Out-Host
+
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+
+      - name: Remember where mise is; verify that no VS / MSVC / Windows SDK is reachable
+        run: |
+          $mise = (Get-Command mise).Source
+          "mise: $mise"; mise --version
+          "MISE_BIN_DIR=$(Split-Path $mise)" >> $env:GITHUB_ENV
+          . ./mise/ci/clean-env.ps1
+          $bad = @()
+          foreach ($c in 'cl','link','vswhere','clang','lld-link','swift') { if (Get-Command $c -ErrorAction SilentlyContinue) { $bad += $c } }
+          foreach ($p in 'C:\Program Files\Microsoft Visual Studio','C:\Program Files (x86)\Microsoft Visual Studio','C:\Program Files (x86)\Windows Kits') { if (Test-Path $p) { $bad += $p } }
+          if ($bad) { $bad | ForEach-Object { Write-Host "::error::still reachable: $_" }; exit 1 }
+          'OK: VS, Build Tools and Windows Kits hidden'
+
+      - name: Link the plugin and list versions
+        run: |
+          . ./mise/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          mise plugins link $env:TOOL "$env:GITHUB_WORKSPACE\mise\vfox-swift"
+          mise plugins ls
+          mise ls-remote $env:TOOL | Select-Object -Last 5
+
+      - name: Install without license acceptance (Swift only, notice expected)
+        run: |
+          . ./mise/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj
+          mise use "$env:TOOL@$env:SWIFT_VERSION"
+          if ($LASTEXITCODE) { exit 1 }
+          Get-Content mise.toml
+          mise exec -- swift --version
+          if ($LASTEXITCODE) { exit 1 }
+          $root = mise where $env:TOOL
+          "install dir: $root"
+          Get-Content "$root\mise-env.json"
+          if ((Get-Content -Raw "$root\mise-env.json" | ConvertFrom-Json).sysroot) { Write-Host '::error::sysroot set up without acceptance'; exit 1 }
+          if (Test-Path "$root\winsysroot") { Write-Host '::error::Microsoft files downloaded without acceptance'; exit 1 }
+          'hello' | Out-Null; 'print("hi")' | Set-Content hi.swift
+          mise exec -- swiftc hi.swift -o hi.exe
+          "linking without the sysroot exited $LASTEXITCODE (expected to fail)"
+          $global:LASTEXITCODE = 0
+
+      - name: Accept the license via the tool option and re-run mise install (adds the sysroot)
+        run: |
+          . ./mise/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          Set-Location "$env:RUNNER_TEMP\proj"
+          $t = Measure-Command {
+            mise use --tool-option accept_msvc_license=true "$env:TOOL@$env:SWIFT_VERSION" 2>&1 | Out-Host
+          }
+          Get-Content mise.toml
+          if (-not (Select-String -Quiet -Path mise.toml -Pattern 'accept_msvc_license')) {
+            # mise without `use --tool-option`: write the option ourselves
+            Set-Content mise.toml "[tools]`n$env:TOOL = { version = `"$env:SWIFT_VERSION`", accept_msvc_license = true }"
+            Get-Content mise.toml
+          }
+          $t2 = Measure-Command { mise install 2>&1 | Out-Host }
+          "mise use: $([math]::Round($t.TotalSeconds))s, mise install: $([math]::Round($t2.TotalSeconds))s"
+          $root = mise where $env:TOOL
+          Get-Content "$root\mise-env.json"
+          if (-not (Get-Content -Raw "$root\mise-env.json" | ConvertFrom-Json).sysroot) { Write-Host '::error::sysroot not set up after acceptance'; exit 1 }
+          Get-Content "$root\setup-stats-*.json"
+          mise env -s pwsh
+
+      - name: Build + run + test through mise exec (VS hidden)
+        run: |
+          . ./mise/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          ./mise/ci/test-mise-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
+
+      - name: Fresh cmd shell (System32 + mise only), mise x
+        if: always()
+        shell: cmd
+        run: |
+          set "PATH=C:\Windows\System32;C:\Windows;%MISE_BIN_DIR%"
+          set INCLUDE=
+          set LIB=
+          cd /d "%RUNNER_TEMP%\proj\swiftpkg"
+          mise x -- swift --version || exit /b 1
+          mise x -- swift build -c release || exit /b 1
+          mise x -- swift run -c release FoundationDemo || exit /b 1
+          mise x -- swift test || exit /b 1
+
+  vs-present:
+    name: windows x64 (VS present, no license acceptance)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      JOB_LABEL: windows x64 with VS
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+      - name: Install (auto mode should pick up the installed Visual Studio)
+        run: |
+          mise plugins link swift-portable "$env:GITHUB_WORKSPACE\mise\vfox-swift"
+          $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj
+          mise use "swift-portable@$env:SWIFT_VERSION" 2>&1 | Tee-Object -Variable log | Out-Host
+          if (-not ($log -match 'installed Visual Studio')) { Write-Host '::warning::did not report the installed Visual Studio' }
+          $root = mise where swift-portable
+          Get-Content "$root\mise-env.json"
+          if (Test-Path "$root\winsysroot") { Write-Host '::error::Microsoft files downloaded although VS is installed'; exit 1 }
+      - name: Build + run + test through mise exec (VS toolchain)
+        run: ./mise/ci/test-mise-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
+
+  unix:
+    name: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+      - name: Install via the plugin
+        run: |
+          mise plugins link swift-portable "$GITHUB_WORKSPACE/mise/vfox-swift"
+          mise ls-remote swift-portable | tail -3
+          mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj"
+          time mise use "swift-portable@$SWIFT_VERSION"
+          mise where swift-portable
+          mise exec -- which swift
+          mise exec -- swift --version
+      - name: Build + run + test
+        run: |
+          cd "$RUNNER_TEMP/proj"
+          cp "$GITHUB_WORKSPACE/mise/ci/tests/foundation.swift" .
+          mise exec -- swiftc foundation.swift -o fdemo && ./fdemo
+          cp -R "$GITHUB_WORKSPACE/mise/ci/tests/swiftpkg" . && cd swiftpkg
+          mise exec -- swift build
+          mise exec -- swift run FoundationDemo
+          mise exec -- swift test
