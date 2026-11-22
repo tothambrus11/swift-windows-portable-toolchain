@@ -291,14 +291,21 @@ jobs:
             $script:rows += "| $n | $r |"
           }
           . ./managers/common/ci/fresh-env.ps1
-          Test-Case 'fresh-shell env after the bootstrapper (user PATH kept REG_EXPAND_SZ)'
-          $fresh = $env:Path
-          $env:Path = "$fresh;%USERPROFILE%\.dotnet\tools"
-          Test-Case 'same + literal `%USERPROFILE%\.dotnet\tools` on PATH'
-          $env:Path = "$fresh;some\relative\dir"
-          Test-Case 'same + `some\relative\dir` on PATH'
-          $env:Path = "$fresh;C:\does\not\exist"
-          Test-Case 'same + nonexistent absolute dir on PATH'
+          Test-Case 'fresh-shell env after the bootstrapper'
+          $userDirs = @((Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_) } | Where-Object { $_ -and $_ -notmatch 'swift-portable' })
+          foreach ($d in $userDirs) { "contents of ${d}:"; Get-ChildItem $d -Force -ErrorAction SilentlyContinue | Select-Object -First 40 Name, Length, LinkType | Format-Table | Out-String -Width 200 | Write-Host }
+          . ./managers/common/ci/clean-env.ps1
+          $clean = $env:Path; $env:SDKROOT = [Environment]::GetEnvironmentVariable('SDKROOT', 'User')
+          $sw = ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -match 'swift-portable' }) -join ';'
+          $env:Path = "$clean;$sw"
+          Test-Case 'clean env + swift (user PATH entries of the runner left out)'
+          foreach ($d in $userDirs + @('C:\does\not\exist', 'some\relative\dir')) {
+            $env:Path = "$clean;$sw;$d"
+            Test-Case "clean env + swift + ``$d``"
+          }
+          $env:Path = "$clean;$sw"; $env:VCToolsInstallDir = 'C:\does\not\exist\'
+          Test-Case 'clean env + swift + VCToolsInstallDir pointing nowhere'
+          Remove-Item env:VCToolsInstallDir
           $md = "### probe (asserts toolchain, Swift $env:SWIFT_VERSION)`n| case | swiftc f.swift |`n|---|---|`n" + ($rows -join "`n")
           $md; $md >> $env:GITHUB_STEP_SUMMARY
           $global:LASTEXITCODE = 0
