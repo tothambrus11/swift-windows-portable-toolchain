@@ -229,11 +229,16 @@ jobs:
   # 6. Hylo integration: Windows SwiftPM job (release) with setup-msvc replacing gha-setup-vsdevenv
   hylo-spm:
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.hylo) || contains(github.event.head_commit.message, '[hylo]') }}
-    name: "Hylo SPM release (${{ matrix.vs }})"
+    name: "Hylo SPM release (${{ matrix.vs }}, msvc ${{ matrix.msvc }})"
     strategy:
       fail-fast: false
       matrix:
-        vs: [vs-present, vs-hidden]
+        include:
+          # MSVC 14.52 (VS 2026 default on windows-2025) has an STL that rejects Swift 6.2.4's clang 19
+          # (STL1000), which breaks Hylo's C++ shims; 14.44 is installed side by side on the image.
+          - { vs: vs-present, msvc: '14.44' }
+          - { vs: vs-hidden, msvc: '14.44' }
+          - { vs: vs-hidden, msvc: latest }
     runs-on: windows-2025
     timeout-minutes: 150
     env:
@@ -287,6 +292,7 @@ jobs:
         uses: ./action/actions/setup-msvc
         with:
           winsdk: "10.0.26100.0"
+          msvc-version: ${{ matrix.msvc }}
           accept-license: true
       - name: Report
         shell: pwsh
@@ -331,11 +337,13 @@ jobs:
   # 6b. Hylo CMake/Ninja job (release)
   hylo-cmake:
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.hylo) || contains(github.event.head_commit.message, '[hylo]') }}
-    name: "Hylo CMake release (${{ matrix.vs }})"
+    name: "Hylo CMake release (${{ matrix.vs }}, msvc ${{ matrix.msvc }})"
     strategy:
       fail-fast: false
       matrix:
-        vs: [vs-present, vs-hidden]
+        include:
+          - { vs: vs-present, msvc: '14.44' }
+          - { vs: vs-hidden, msvc: '14.44' }
     runs-on: windows-2025
     timeout-minutes: 150
     env:
@@ -385,8 +393,8 @@ jobs:
         uses: ./action/actions/setup-msvc
         with:
           winsdk: "10.0.26100.0"
+          msvc-version: ${{ matrix.msvc }}
           accept-license: true
-          export-cc: ${{ matrix.vs == 'vs-hidden' && 'clang-cl' || 'false' }}
       - name: Set up CMake and Ninja
         uses: lukka/get-cmake@latest
         with:
