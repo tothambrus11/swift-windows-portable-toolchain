@@ -291,16 +291,18 @@ function Resolve-Portable {
       $id = $p.GetProperty('id').GetString()
       if ($id -notmatch '^Microsoft\.(VC\.[\d.]+\.CRT\.|VisualCpp\.CRT\.Headers$)') { continue }
       $o = @{ id = $id; version = $p.GetProperty('version').GetString(); payloads = @(); deps = @() }
-      $pl = $null
-      if ($p.TryGetProperty('payloads', [ref]$pl)) {
-        foreach ($x in $pl.EnumerateArray()) {
-          $sha = $null; $tmp = $null
-          if ($x.TryGetProperty('sha256', [ref]$tmp)) { $sha = $tmp.GetString() }
-          $o.payloads += @{ url = $x.GetProperty('url').GetString(); sha256 = $sha; size = $(if ($x.TryGetProperty('size', [ref]$tmp)) { $tmp.GetInt64() } else { 0 }) }
+      # (JsonElement.TryGetProperty's out parameter does not bind from PowerShell: enumerate instead)
+      $props = @{}; foreach ($pp in $p.EnumerateObject()) { $props[$pp.Name] = $pp.Value }
+      if ($props.ContainsKey('payloads')) {
+        foreach ($x in $props['payloads'].EnumerateArray()) {
+          $xp = @{}; foreach ($pp in $x.EnumerateObject()) { $xp[$pp.Name] = $pp.Value }
+          $o.payloads += @{
+            url = $xp['url'].GetString()
+            sha256 = $(if ($xp.ContainsKey('sha256')) { $xp['sha256'].GetString() } else { $null })
+            size = $(if ($xp.ContainsKey('size')) { $xp['size'].GetInt64() } else { 0 }) }
         }
       }
-      $dp = $null
-      if ($p.TryGetProperty('dependencies', [ref]$dp)) { foreach ($d in $dp.EnumerateObject()) { $o.deps += $d.Name } }
+      if ($props.ContainsKey('dependencies')) { foreach ($d in $props['dependencies'].EnumerateObject()) { $o.deps += $d.Name } }
       if (-not $pk.ContainsKey($id.ToLowerInvariant())) { $pk[$id.ToLowerInvariant()] = $o }
     }
   } finally { $doc.Dispose() }

@@ -253,10 +253,6 @@ jobs:
       - name: Hylo revision
         run: git -C hylo log -1 --format='%H %s'
         shell: bash
-      - name: Hide Visual Studio
-        if: matrix.vs == 'vs-hidden'
-        shell: pwsh
-        run: ./action/xwin/hide-vs.ps1
       - name: Set compiler version
         working-directory: hylo
         run: ./Tools/set-hc-version.sh
@@ -269,6 +265,10 @@ jobs:
           llvmBuildConfig: MinSizeRel
           addToPkgConfigPath: true
           addToPath: true
+      - name: Hide Visual Studio (after get-llvm, which needs the preinstalled clang to detect the platform)
+        if: matrix.vs == 'vs-hidden'
+        shell: pwsh
+        run: ./action/xwin/hide-vs.ps1
       - name: Set up Swift (SwiftyLab)
         if: matrix.vs == 'vs-present'
         uses: SwiftyLab/setup-swift@latest
@@ -350,10 +350,6 @@ jobs:
           submodules: true
           show-progress: false
           path: hylo
-      - name: Hide Visual Studio
-        if: matrix.vs == 'vs-hidden'
-        shell: pwsh
-        run: ./action/xwin/hide-vs.ps1
       - name: Set compiler version
         working-directory: hylo
         run: ./Tools/set-hc-version.sh
@@ -367,6 +363,10 @@ jobs:
           llvmBuildConfig: 'MinSizeRel'
           addToPkgConfigPath: true
           addToPath: true
+      - name: Hide Visual Studio (after get-llvm, which needs the preinstalled clang to detect the platform)
+        if: matrix.vs == 'vs-hidden'
+        shell: pwsh
+        run: ./action/xwin/hide-vs.ps1
       - name: Set up Swift (SwiftyLab)
         if: matrix.vs == 'vs-present'
         uses: SwiftyLab/setup-swift@latest
