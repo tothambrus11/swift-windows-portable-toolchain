@@ -40,6 +40,8 @@ param(
   [switch]$NoAsserts,
   # Keep the Windows SDK content for the other architectures (x86/arm64/x64) and the redistributable .msm files
   [switch]$KeepOtherArchs,
+  # Don't replace the installer's duplicate binaries with hard links
+  [switch]$NoDedupe,
   # MSVC CRT source: 'vsmanifest' (default, pure PowerShell) or 'xwin'
   [ValidateSet('vsmanifest', 'xwin')][string]$CrtSource = 'vsmanifest',
   [string]$VsChannelUrl = 'https://aka.ms/vs/17/release/channel',
@@ -361,6 +363,27 @@ if (-not $KeepOtherArchs) {
 }
 $stats.swift_disk_mb = Get-DirSizeMB $swiftRoot
 
+if (-not $NoDedupe) {
+  # The installer ships identical copies of the same binary under several names (swift-frontend =
+  # swift-autolink-extract = swift-api-digester = swift-symbolgraph-extract, clang = clang++ = clang-cl = ...,
+  # lld = lld-link = ld.lld = ...). Replace duplicates with NTFS hard links (no admin needed): ~1.2 GB saved.
+  $saved = 0
+  $cands = Get-ChildItem $swiftRoot -Recurse -File | Where-Object { $_.Length -ge 1MB } | Group-Object Length | Where-Object { $_.Count -gt 1 }
+  foreach ($g in $cands) {
+    foreach ($h in $g.Group | Group-Object { (Get-FileHash -Algorithm SHA256 $_.FullName).Hash } | Where-Object { $_.Count -gt 1 }) {
+      $keep = $h.Group[0]
+      foreach ($dup in $h.Group | Select-Object -Skip 1) {
+        if ([System.IO.Path]::GetPathRoot($dup.FullName) -ne [System.IO.Path]::GetPathRoot($keep.FullName)) { continue }
+        Remove-Item -LiteralPath $dup.FullName -Force
+        New-Item -ItemType HardLink -Path $dup.FullName -Target $keep.FullName | Out-Null
+        $saved += $dup.Length
+      }
+    }
+  }
+  $stats.dedupe_saved_mb = [math]::Round($saved / 1MB, 1)
+  $stats.swift_disk_unique_mb = [math]::Round($stats.swift_disk_mb - $saved / 1MB, 1)
+}
+
 # ---------------------------------------------------------------- MSVC CRT
 $sysroot = Join-Path $Target 'winsysroot'
 if (Test-Path $sysroot) { Remove-Item -Recurse -Force $sysroot }
@@ -557,7 +580,8 @@ $bat += ('set "Path={0};%Path%"' -f $pathPrefix)
 Set-Content -Path (Join-Path $Target 'activate.bat') -Value $bat -Encoding ASCII
 
 $stats.total_s = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-$stats.total_disk_mb = Get-DirSizeMB $Target
+$stats.total_disk_mb = Get-DirSizeMB $Target   # counts hard links once per name
+if ($stats.Contains('dedupe_saved_mb')) { $stats.total_disk_unique_mb = [math]::Round($stats.total_disk_mb - $stats.dedupe_saved_mb, 1) }
 $stats | ConvertTo-Json | Set-Content -Path (Join-Path $Target 'setup-stats.json') -Encoding UTF8
 Write-Step 'Done'
 $stats | Format-Table -AutoSize | Out-String | Write-Host

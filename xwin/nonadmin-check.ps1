@@ -11,11 +11,13 @@ try {
 
   . (Join-Path $PSScriptRoot 'clean-env.ps1')
   # Start-Process -Credential inherits the *caller's* environment: point the per-user dirs at this user's profile
-  $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
-  $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
-  $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
-  $env:TEMP = $env:TMP = Join-Path $env:LOCALAPPDATA 'Temp'
-  New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+  # (GetFolderPath still resolves to the caller's profile here, so use directories next to -Root)
+  $base = Split-Path $Root
+  $env:USERPROFILE = Join-Path $base 'home'
+  $env:LOCALAPPDATA = Join-Path $base 'home\AppData\Local'
+  $env:APPDATA = Join-Path $base 'home\AppData\Roaming'
+  $env:TEMP = $env:TMP = Join-Path $base 'home\AppData\Local\Temp'
+  foreach ($d in $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP) { New-Item -ItemType Directory -Force $d | Out-Null }
   Write-Host "user=$(whoami) LOCALAPPDATA=$env:LOCALAPPDATA TEMP=$env:TEMP"
   & (Join-Path $PSScriptRoot 'setup-portable-swift.ps1') -Target $Root -AcceptLicense
   . (Join-Path $Root 'activate.ps1')
