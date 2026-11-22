@@ -85,6 +85,8 @@ jobs:
         run: |
           $r = "$env:LOCALAPPDATA\swift-portable"
           Get-ChildItem $r\winsysroot -Directory -Recurse -Depth 5 | Select-Object -ExpandProperty FullName
+          'Largest toolchain binaries:'
+          Get-ChildItem $r\Swift\Toolchains -Recurse -File | Sort-Object Length -Descending | Select-Object -First 25 | ForEach-Object { '{0,8:n0} MB  {1}' -f ($_.Length/1MB), $_.Name }
           foreach ($d in Get-ChildItem $r -Directory -Recurse -Depth 7) {
             $s = (Get-ChildItem $d.FullName -Recurse -File | Measure-Object Length -Sum).Sum
             if ($s -gt 40MB) { "{0,8:n0} MB  {1}" -f ($s/1MB), $d.FullName }
