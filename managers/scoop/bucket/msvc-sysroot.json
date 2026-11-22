@@ -14,7 +14,7 @@
                   "With Visual Studio (VC tools) installed, nothing is downloaded and VS is used (SWIFT_PORTABLE_MSVC=portable overrides)."
               ],
     "url":  "https://raw.githubusercontent.com/tothambrus11/swift-windows-portable-toolchain/exp/managers/managers/common/setup-portable-swift.ps1",
-    "hash":  "89e1bfcb8f98a6c24929c92f2aa9bfa5af11b83bcc94ca074941c63954a9b828",
+    "hash":  "c2b2246b3bd6ca6fb2b6b9234c3fbcd48d8afca25ce076527058da6ae5fc4f77",
     "installer":  {
                       "script":  [
                                      "$spArch = if ($architecture -eq 'arm64') { 'arm64' } else { 'x64' }",

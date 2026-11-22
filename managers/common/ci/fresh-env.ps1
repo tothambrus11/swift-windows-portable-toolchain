@@ -11,7 +11,10 @@ function Get-UserVar([string]$n) {
 }
 foreach ($n in $k.GetValueNames()) {
   if ($n -in 'Path', 'TEMP', 'TMP') { continue }
-  Set-Item "env:$n" (Get-UserVar $n)
+  # hide-vs.ps1 leaves the VS variables as *empty* HKCU values on the runner; PowerShell 7.5+ would define them as
+  # empty variables, and an empty VCToolsInstallDir makes the asserts toolchain crash (see the probe job)
+  $v = Get-UserVar $n
+  if ($v -ne '') { Set-Item "env:$n" $v }
 }
 $env:Path = $env:Path + ';' + (Get-UserVar 'Path')
 Write-Host "fresh env: user Path is $($k.GetValueKind('Path')); PATH=$env:Path"

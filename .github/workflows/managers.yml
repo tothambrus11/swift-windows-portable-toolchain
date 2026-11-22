@@ -263,9 +263,10 @@ jobs:
 
   probe:
     # Root cause of the asserts-toolchain crash "virtual path not absolute" (LLVM VirtualFileSystem.cpp:2769) seen in
-    # runs 45050299750/45051100740: a *relative* entry on PATH - here %USERPROFILE%\.dotnet\tools left unexpanded
-    # because the user PATH had been rewritten as REG_SZ. Junctions/symlinks are fine (run 45051993385).
-    name: probe - asserts toolchain vs. a relative PATH entry (VS hidden)
+    # runs 45050299750/45051100740/45052185298: an *empty* VCToolsInstallDir in the environment (LLVM's
+    # findVCToolChainViaEnvironment accepts it, Swift's ClangImporter then maps "include/module.modulemap").
+    # Junctions/symlinks (run 45051993385) and PATH entries (run 45052669321) are fine.
+    name: probe - asserts toolchain vs. empty VS variables (VS hidden)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -303,9 +304,13 @@ jobs:
             $env:Path = "$clean;$sw;$d"
             Test-Case "clean env + swift + ``$d``"
           }
-          $env:Path = "$clean;$sw"; $env:VCToolsInstallDir = 'C:\does\not\exist\'
-          Test-Case 'clean env + swift + VCToolsInstallDir pointing nowhere'
-          Remove-Item env:VCToolsInstallDir
+          $env:Path = "$clean;$sw"
+          foreach ($v in 'VCToolsInstallDir', 'VCINSTALLDIR', 'UniversalCRTSdkDir', 'WindowsSdkDir') {
+            Set-Item "env:$v" ''   # PowerShell 7.5+ keeps an empty value (older versions delete the variable)
+            "  $v defined: $(Test-Path "env:$v")"
+            Test-Case "clean env + swift + empty ``$v``"
+            Remove-Item "env:$v" -ErrorAction SilentlyContinue
+          }
           $md = "### probe (asserts toolchain, Swift $env:SWIFT_VERSION)`n| case | swiftc f.swift |`n|---|---|`n" + ($rows -join "`n")
           $md; $md >> $env:GITHUB_STEP_SUMMARY
           $global:LASTEXITCODE = 0

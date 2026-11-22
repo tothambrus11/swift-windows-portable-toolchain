@@ -102,8 +102,7 @@ if ($needSysroot) {
 $envj = Get-Content -Raw "$tc\mise-env.json" | ConvertFrom-Json
 if (-not $NoModifyPath) {
   # Edit the raw REG_EXPAND_SZ value: [Environment]::SetEnvironmentVariable(.., 'User') would store it as REG_SZ and
-  # leave entries like %USERPROFILE%\.dotnet\tools unexpanded, i.e. relative - which makes the asserts toolchain's
-  # swift-frontend assert ("virtual path not absolute").
+  # leave entries like %USERPROFILE%\.dotnet\tools unexpanded in every new shell (rustup does the same).
   $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
   $mine = [regex]::Escape((Join-Path $Root 'toolchains') + '\')
   $userPath = @(("$($key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'))" -split ';') | Where-Object { $_ -and $_ -notmatch "^$mine" })

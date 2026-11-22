@@ -224,7 +224,7 @@ $sysroot = if ($SysrootDir) { [System.IO.Path]::GetFullPath($SysrootDir) } else 
 $sharedSysroot = -not $sysroot.StartsWith($Target + '\', [System.StringComparison]::OrdinalIgnoreCase)
 # Even with a shared sysroot the modulemaps are copied in by default (-Part link writes only these few files);
 # -ModulemapMode overlay keeps the sysroot untouched. (The asserts-toolchain crash "virtual path not absolute" seen
-# while developing this was caused by a *relative* PATH entry, not by the overlay or by junctions: see managers.yml.)
+# while developing this came from an *empty* VCToolsInstallDir variable, not from the overlay: see managers.yml.)
 $stats.part = $Part
 if (-not $SwiftVersion -and $doSwift) {
   $rel = Invoke-RestMethod -Uri 'https://www.swift.org/api/v1/install/releases.json'
