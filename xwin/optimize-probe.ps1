@@ -50,6 +50,16 @@ Show 'repro+import FoundationEssentials -O' { swiftc -O repro-ess.swift -o re1.e
 Show 'repro+import FoundationEssentials -Onone' { swiftc -Onone repro-ess.swift -o re0.exe; if ($?) { .\re0.exe } }
 Show 'foundation.swift -O' { swiftc -O foundation.swift -o f1.exe; if ($?) { .\f1.exe | Select-Object -Last 1 } }
 Show 'foundation.swift without FoundationEssentials import -O' { swiftc -O foundation-noess.swift -o f2.exe; if ($?) { .\f2.exe | Select-Object -Last 1 } }
+# Hypothesis A: module name. `swiftc foo.swift -o foo-o.exe` names the module after the *input* file when the
+# output stem is not an identifier -> module "foundation", which clashes (case-insensitively) with Foundation.
+Show 'foundation.swift -O -o foundation-o.exe (module name = foundation)' { swiftc -O foundation.swift -o foundation-o.exe; if ($?) { .\foundation-o.exe | Select-Object -Last 1 } }
+Show 'foundation.swift -O -o foundation-o.exe -module-name app' { swiftc -O foundation.swift -o foundation-o2.exe -module-name app; if ($?) { .\foundation-o2.exe | Select-Object -Last 1 } }
+Show 'foundation.swift -Onone -o foundation-d.exe (module name = foundation)' { swiftc -Onone foundation.swift -o foundation-d.exe; if ($?) { .\foundation-d.exe | Select-Object -Last 1 } }
+Show 'repro as module "foundation" -O' { swiftc -O repro.swift -module-name foundation -o rm1.exe; if ($?) { .\rm1.exe } }
+Show 'repro as module "foundation" -Onone' { swiftc -Onone repro.swift -module-name foundation -o rm0.exe; if ($?) { .\rm0.exe } }
+Show 'repro as module "foundation" -O, autolink directives' { swiftc -O -c repro.swift -module-name foundation -o "$Work\rm1.o"; Get-Directives "$Work\rm1.o" }
+Show 'repro as module "foundation" -Onone, autolink directives' { swiftc -Onone -c repro.swift -module-name foundation -o "$Work\rm0.o"; Get-Directives "$Work\rm0.o" }
+Show 'repro as module "foundation" -Onone, link job' { swiftc -Onone repro.swift -module-name foundation -o rm2.exe -driver-print-jobs }
 Show 'repro -O -lFoundation' { swiftc -O repro.swift -lFoundation -o r3.exe; if ($?) { .\r3.exe } }
 Show 'foundation.swift -O -lFoundation' { swiftc -O foundation.swift -lFoundation -o f3.exe; if ($?) { .\f3.exe } }
 Show 'repro -O -driver-print-jobs' { swiftc -O repro.swift -o r4.exe -driver-print-jobs }

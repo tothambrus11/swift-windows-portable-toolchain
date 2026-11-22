@@ -92,7 +92,8 @@ Invoke-Case 'f-cxx-interop' { Run swiftc -cxx-interoperability-mode=default -I C
 Pop-Location
 
 Set-Content -Path plain.c -Value '#include <stdio.h>', '#include <math.h>', '#include <windows.h>', 'int main(void){ printf("clang ok %llu %f\n", GetTickCount64(), sqrt(2.0)); return 0; }'
-Invoke-Case 'g-plain-clang' { Run clang plain.c -o plain.exe; Run .\plain.exe } 'clang ok'
+Invoke-Case 'g-plain-clang' { Run clang -v plain.c -o plain.exe; Run .\plain.exe } 'clang ok'
+Invoke-Case 'g3-plain-clang-explicit-MD' { Run clang -fms-runtime-lib=dll plain.c -o plain3.exe; Run .\plain3.exe } 'clang ok'
 Invoke-Case 'g2-clang-no-INCLUDE-LIB' {
   $i = $env:INCLUDE; $l = $env:LIB; Remove-Item env:INCLUDE, env:LIB
   Run clang plain.c -o plain2.exe; Run .\plain2.exe
@@ -126,7 +127,7 @@ Invoke-Case 'v5-flags-modulemaps-cfg-sysroot-backslash' { Run swiftc @SdkFlags w
 Restore-Cfg
 $SdkFlagsFwd = @('-windows-sdk-root', $kits.Replace('\', '/'), '-windows-sdk-version', $sdkVer, '-visualc-tools-root', $vcTools.Replace('\', '/'), '-visualc-tools-version', $vcVer)
 Invoke-Case 'v6-fwdslash-flags-modulemaps-cfg' { Run swiftc @SdkFlagsFwd winsdk.swift -o v6.exe; Run .\v6.exe } 'WINSDK OK'
-Invoke-Case 'v7-flags-default-setup' { Run swiftc @SdkFlags foundation.swift -o v7.exe; Run .\v7.exe } 'FOUNDATION OK'
+Invoke-Case 'v7-flags-default-setup' { Run swiftc @SdkFlags -Rmodule-interface-rebuild foundation.swift -o v7.exe; Run .\v7.exe } 'FOUNDATION OK'
 # minimal crash repro without any cfg: plain forward-slash -Xcc header search path + -windows-sdk-root
 Set-Cfg @('-fuse-ld=lld')
 Invoke-Case 'v8-crash-repro-Xcc-isystem-fwdslash' { Run swiftc @SdkFlags -Xcc -isystem -Xcc "$($kits.Replace('\', '/'))/Include/$sdkVer/ucrt" winsdk.swift -o v8.exe } 'never'

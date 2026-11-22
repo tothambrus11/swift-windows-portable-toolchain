@@ -290,6 +290,44 @@ $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 $swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
 if (-not $swiftExe) { throw "swift.exe not found under $swiftRoot" }
 $toolchainBin = $swiftExe.DirectoryName
+
+# The toolchain's Swift tools load their runtime as side-by-side assemblies from usr\bin\<name>\<name>.dll.
+# swift-build/swift-test (cli.msi) depend on assemblies (FoundationXML, swiftRegexBuilder) that the installer
+# only ships in *other* components (ide/dbg) - so with a minimal component set they fail with error 14001.
+# Find what the manifests need and copy just those assembly directories out of the other MSIs.
+function Get-MissingAssemblies {
+  $need = @()
+  foreach ($exe in Get-ChildItem $toolchainBin -Filter *.exe) {
+    $txt = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($exe.FullName))
+    $man = [regex]::Match($txt, '<assembly[\s\S]*?</assembly>').Value
+    foreach ($d in [regex]::Matches($man, '<dependentAssembly>[\s\S]*?name="([^"]+)"')) {
+      $n = $d.Groups[1].Value
+      if ($n -notmatch '^Microsoft\.' -and -not (Test-Path (Join-Path $toolchainBin $n))) { $need += $n }
+    }
+  }
+  return @($need | Select-Object -Unique)
+}
+$missing = Get-MissingAssemblies
+$stats.sxs_assemblies_borrowed = [ordered]@{}
+foreach ($extra in 'ide', 'dbg') {
+  if ($missing.Count -eq 0) { break }
+  $m = $msis | Where-Object { ($_.Name.ToLowerInvariant() -split '\.')[0] -eq $extra -and $(if ($NoAsserts) { $_.Name -match '\.noasserts\.' } else { $_.Name -notmatch '\.noasserts\.' }) } | Select-Object -First 1
+  if (-not $m -or $Components -contains $extra) { continue }
+  Write-Host "    toolchain tools need assemblies [$($missing -join ', ')]: borrowing them from $($m.Name)"
+  $s = Join-Path $Target '_x'
+  $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$($m.FullName)`"", '/qn', "TARGETDIR=`"$s`"") -Wait -PassThru
+  if ($p.ExitCode -ne 0) { throw "msiexec /a $($m.Name) failed: $($p.ExitCode)" }
+  $bin = Get-ChildItem (Join-Path $s 'LocalApp\Programs\Swift\Toolchains') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'usr\bin' } | Select-Object -First 1
+  foreach ($n in $missing) {
+    if ($bin -and (Test-Path (Join-Path $bin $n))) {
+      Copy-Item -Recurse (Join-Path $bin $n) (Join-Path $toolchainBin $n)
+      $stats.sxs_assemblies_borrowed[$n] = $m.Name
+    }
+  }
+  Remove-Item -Recurse -Force $s -ErrorAction SilentlyContinue
+  $missing = Get-MissingAssemblies
+}
+if ($missing.Count -gt 0) { Write-Warning "toolchain still misses side-by-side assemblies: $($missing -join ', ')" }
 $runtimeBin = Join-Path $swiftRoot "Runtimes\$SwiftVersion\usr\bin"
 $platform = Get-ChildItem -Path (Join-Path $swiftRoot 'Platforms') -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
 if (-not (Test-Path (Join-Path $runtimeBin 'swiftCore.dll')) -or -not $platform) {
