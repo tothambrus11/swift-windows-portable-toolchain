@@ -69,7 +69,9 @@ jobs:
         run: |
           . ./xwin/clean-env.ps1
           $t = Measure-Command {
-            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' -Full:$('${{ matrix.full }}' -eq 'true') | Out-Host
+            # 'full' job: all components + the no-asserts toolchain + modulemaps via VFS overlay instead of copies
+            $extra = @{}; if ('${{ matrix.full }}' -eq 'true') { $extra = @{ Full = $true; NoAsserts = $true; ModulemapMode = 'overlay' } }
+            & ./xwin/setup-portable-swift.ps1 -Target "$env:LOCALAPPDATA\swift-portable" -AcceptLicense -SwiftVersion '${{ github.event.inputs.swift_version }}' @extra | Out-Host
           }
           if (-not (Test-Path "$env:LOCALAPPDATA\swift-portable\activate.ps1")) { exit 1 }
           "setup took $([math]::Round($t.TotalSeconds,1))s"
@@ -126,11 +128,23 @@ jobs:
           icacls $na /grant "${u}:(OI)(CI)F" /T /Q | Out-Null
           $log = "$na\nonadmin.log"
           $cmd = "`"C:\Program Files\PowerShell\7\pwsh.exe`" -NoProfile -ExecutionPolicy Bypass -File $na\xwin\nonadmin-check.ps1 -Root $na\swift -Log $log"
-          schtasks /create /tn swiftnonadmin /tr $cmd /sc once /st 23:59 /ru $u /rp $pw /rl LIMITED /f
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          schtasks /run /tn swiftnonadmin
-          while (-not (Test-Path "$log.done") -and $sw.Elapsed.TotalMinutes -lt 20) { Start-Sleep 10 }
-          schtasks /query /tn swiftnonadmin /fo list /v | Select-String 'Status|Last Result|Run As User'
+          # Attempt 1: CreateProcessWithLogonW (Start-Process -Credential)
+          try {
+            $cred = New-Object System.Management.Automation.PSCredential($u, (ConvertTo-SecureString $pw -AsPlainText -Force))
+            $proc = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -Credential $cred -LoadUserProfile -WorkingDirectory $na -PassThru `
+              -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$na\xwin\nonadmin-check.ps1", '-Root', "$na\swift", '-Log', $log)
+            "started pid $($proc.Id) as $u via Start-Process -Credential"
+          } catch { "Start-Process -Credential failed: $_" }
+          Start-Sleep 20
+          if (-not (Test-Path $log)) {
+            # Attempt 2: scheduled task (needs SeBatchLogonRight: 'Performance Log Users' has it by default, and is not an admin group)
+            net localgroup 'Performance Log Users' $u /add | Out-Null
+            schtasks /create /tn swiftnonadmin /tr $cmd /sc once /st 23:59 /ru $u /rp $pw /rl LIMITED /f
+            schtasks /run /tn swiftnonadmin
+          }
+          while (-not (Test-Path "$log.done") -and $sw.Elapsed.TotalMinutes -lt 12) { Start-Sleep 10 }
+          schtasks /query /tn swiftnonadmin /fo list /v 2>$null | Select-String 'Status|Last Result|Run As User'
           Get-Content $log -ErrorAction SilentlyContinue
           "took $([math]::Round($sw.Elapsed.TotalSeconds))s"
           if (-not (Test-Path "$log.done")) { Write-Host '::error::non-admin run did not finish'; exit 1 }

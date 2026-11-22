@@ -53,8 +53,8 @@ param(
   [string]$SdkVersion = '',
   [string]$XwinVersion = '0.10.0',
   [switch]$IncludeDebugLibs,
-  # Don't copy Swift's ucrt/winsdk/vcruntime modulemaps into the sysroot (then you need the -windows-sdk-root... flags)
-  [switch]$NoModulemapCopy,
+  # How Swift's ucrt/winsdk/vcruntime modulemaps are made visible: 'copy' next to the headers, or a clang 'overlay'
+  [ValidateSet('copy', 'overlay')][string]$ModulemapMode = 'copy',
   [Alias('AcceptMicrosoftLicense')][switch]$AcceptLicense,
   # Keep the downloaded installer / caches (useful for CI caching)
   [switch]$KeepDownloads,
@@ -299,7 +299,13 @@ $toolchainBin = $swiftExe.DirectoryName
 function Get-MissingAssemblies {
   $need = @()
   foreach ($exe in Get-ChildItem $toolchainBin -Filter *.exe) {
-    $txt = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($exe.FullName))
+    # The manifest lives in .rsrc near the end of the PE: read only the last 16 MB (whole files are >1 GB in total)
+    $fs = [System.IO.File]::OpenRead($exe.FullName)
+    try {
+      $len = [int][math]::Min($fs.Length, 16MB); $fs.Position = $fs.Length - $len
+      $buf = New-Object byte[] $len; [void]$fs.Read($buf, 0, $len)
+    } finally { $fs.Dispose() }
+    $txt = [System.Text.Encoding]::ASCII.GetString($buf)
     $man = [regex]::Match($txt, '<assembly[\s\S]*?</assembly>').Value
     foreach ($d in [regex]::Matches($man, '<dependentAssembly>[\s\S]*?name="([^"]+)"')) {
       $n = $d.Groups[1].Value
@@ -470,40 +476,55 @@ if (-not $KeepDownloads) {
 # ---------------------------------------------------------------- modulemaps
 # The Swift frontend only VFS-overlays its ucrt/winsdk/vcruntime modulemaps onto the SDK when it can
 # *locate* the SDK: -windows-sdk-root/-visualc-tools-root flags or the HKLM registry (admin). SwiftPM does
-# not forward -Xswiftc flags to every job (e.g. the generated test runner), so instead place the
-# modulemaps physically next to the headers (what pre-5.9 Swift installers did) - then clang finds
-# the `ucrt`, `WinSDK`, `vcruntime` modules through the INCLUDE search path alone.
-if (-not $NoModulemapCopy) {
-  $share = Join-Path $sdkRoot 'usr\share'
-  $inc = "$kits\Include\$sdkVer"
-  foreach ($f in Get-ChildItem $share -File | Where-Object { $_.Extension -in '.modulemap', '.apinotes' }) {
-    $n = $f.Name.ToLowerInvariant()
-    $dest = switch -regex ($n) {
-      '^ucrt\.modulemap$'          { "$inc\ucrt\module.modulemap" }
-      '^ucrt\.apinotes$'           { "$inc\ucrt\ucrt.apinotes" }
-      '^vcruntime\.modulemap$'     { "$($vcRoot.FullName)\include\module.modulemap" }
-      '^vcruntime\.apinotes$'      { "$($vcRoot.FullName)\include\vcruntime.apinotes" }
-      '^winsdk\.modulemap$'        { "$inc\um\module.modulemap" }
-      '^winsdk_(\w+)\.modulemap$'  { "$inc\$($Matches[1])\module.modulemap" }
-      '^winsdk\.apinotes$'         { "$inc\um\WinSDK.apinotes" }
-      default                      { $null }
-    }
-    if ($dest -and (Test-Path (Split-Path $dest))) { Copy-Item $f.FullName $dest -Force; Write-Host "    $($f.Name) -> $dest" }
-    else { Write-Host "    (not placed) $($f.Name)" }
+# not forward -Xswiftc flags to every job (e.g. the generated test runner), so we make them visible ourselves:
+#   copy    (default): place them physically next to the headers (what pre-5.9 Swift installers did)
+#   overlay          : leave the SDK untouched and map them in with a clang VFS overlay referenced from clang.cfg
+$share = Join-Path $sdkRoot 'usr\share'
+$inc = "$kits\Include\$sdkVer"
+$placements = @()
+foreach ($f in Get-ChildItem $share -File | Where-Object { $_.Extension -in '.modulemap', '.apinotes' }) {
+  $n = $f.Name.ToLowerInvariant()
+  $dest = switch -regex ($n) {
+    '^ucrt\.modulemap$'          { "$inc\ucrt\module.modulemap" }
+    '^ucrt\.apinotes$'           { "$inc\ucrt\ucrt.apinotes" }
+    '^vcruntime\.modulemap$'     { "$($vcRoot.FullName)\include\module.modulemap" }
+    '^vcruntime\.apinotes$'      { "$($vcRoot.FullName)\include\vcruntime.apinotes" }
+    '^winsdk\.modulemap$'        { "$inc\um\module.modulemap" }
+    '^winsdk_(\w+)\.modulemap$'  { "$inc\$($Matches[1])\module.modulemap" }
+    '^winsdk\.apinotes$'         { "$inc\um\WinSDK.apinotes" }
+    default                      { $null }
   }
+  if ($dest -and (Test-Path (Split-Path $dest))) { $placements += [pscustomobject]@{ src = $f.FullName; dest = $dest } }
+  else { Write-Host "    (not placed) $($f.Name)" }
 }
+$cfgExtra = @()
+if ($ModulemapMode -eq 'copy') {
+  foreach ($pl in $placements) { Copy-Item $pl.src $pl.dest -Force; Write-Host "    $(Split-Path $pl.src -Leaf) -> $($pl.dest)" }
+} else {
+  $roots = @()
+  foreach ($grp in $placements | Group-Object { Split-Path $_.dest }) {
+    $roots += [ordered]@{ name = $grp.Name; type = 'directory'
+      contents = @($grp.Group | ForEach-Object { [ordered]@{ name = (Split-Path $_.dest -Leaf); type = 'file'; 'external-contents' = $_.src } }) }
+  }
+  $overlay = Join-Path $sysroot 'swift-modulemaps.vfsoverlay.yaml'
+  [ordered]@{ version = 0; 'case-sensitive' = 'false'; roots = $roots } | ConvertTo-Json -Depth 8 | Set-Content -Path $overlay -Encoding ASCII
+  Write-Host "    VFS overlay with $($placements.Count) files: $overlay"
+  $cfgExtra += "-ivfsoverlay `"$($overlay.Replace('\', '\\'))`""
+}
+$stats.modulemap_mode = $ModulemapMode
 
 # ---------------------------------------------------------------- clang default config
 # swiftc links through clang.exe, which defaults to MSVC link.exe (absent without VS), and SwiftPM's
 # build system does not pass INCLUDE/LIB to every clang job. clang reads <clang-dir>\clang.cfg by
-# default, so make lld the default linker and point clang at the /winsysroot-style sysroot.
+# default (so does the Swift ClangImporter), so make lld the default linker and point clang at the
+# /winsysroot-style sysroot.
 foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
-  Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value @(
+  Set-Content -Path (Join-Path $toolchainBin $cfg) -Encoding ASCII -Value (@(
     '# added by setup-portable-swift.ps1 (no Visual Studio): use lld and the portable MSVC/WinSDK sysroot',
     '-fuse-ld=lld',
     # NB: backslash is an escape character in clang config files -> double it. Do NOT use forward slashes:
     # a forward-slash sysroot crashes swift-frontend's VFS overlay ("Paths should not contain traversal components").
-    "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '\\'))`"")
+    "-Xmicrosoft-windows-sys-root `"$($sysroot.Replace('\', '\\'))`"") + $cfgExtra)
 }
 
 # ---------------------------------------------------------------- activation scripts
