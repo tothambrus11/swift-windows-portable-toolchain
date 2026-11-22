@@ -8,12 +8,26 @@ M.is_mise = ok_file
 
 local sep = package.config:sub(1, 1)
 
+-- Standalone vfox passes the string to `cmd /c` as is, and cmd then strips the first and the last quote
+-- of a line that starts with one ("The filename, directory name, or volume label syntax is incorrect"):
+-- wrap it in one more pair. mise quotes the line itself (cmd /s /c "...").
+function M.shell(command)
+    if sep == "\\" and not M.is_mise then
+        return '"' .. command .. '"'
+    end
+    return command
+end
+
+function M.execute(command)
+    return os.execute(M.shell(command))
+end
+
 function M.exec(command)
     local ok, cmd = pcall(require, "cmd")
     if ok then
         return cmd.exec(command)
     end
-    local h = assert(io.popen(command))
+    local h = assert(io.popen(M.shell(command)))
     local out = h:read("*a")
     h:close()
     return out

@@ -42,12 +42,13 @@ jobs:
           "$env:USERPROFILE\scoop\shims" >> $env:GITHUB_PATH
       - name: Build the bucket (manifests pinned to this commit's setup script) and add it
         run: |
-          ./managers/scoop/build-bucket.ps1 -ScriptUrl $env:SCRIPT_URL -OutDir "$env:RUNNER_TEMP\bucket\bucket"
-          Get-Content "$env:RUNNER_TEMP\bucket\bucket\swift-portable.json"
-          git -C "$env:RUNNER_TEMP\bucket" init -q
-          git -C "$env:RUNNER_TEMP\bucket" add .
-          git -C "$env:RUNNER_TEMP\bucket" -c user.name=ci -c user.email=ci@example.invalid commit -q -m bucket
-          scoop bucket add swift-portable "$env:RUNNER_TEMP\bucket"
+          # `scoop bucket add <name> <url>` only takes git URLs; a local bucket is a git repo in scoop\buckets
+          $b = "$env:USERPROFILE\scoop\buckets\swift-portable"
+          ./managers/scoop/build-bucket.ps1 -ScriptUrl $env:SCRIPT_URL -OutDir "$b\bucket"
+          Get-Content "$b\bucket\swift-portable.json"
+          git -C $b init -q
+          git -C $b add .
+          git -C $b -c user.name=ci -c user.email=ci@example.invalid commit -q -m bucket
           scoop bucket list
       - name: License gate - install without acceptance must fail and download nothing from Microsoft
         if: ${{ !matrix.vs }}

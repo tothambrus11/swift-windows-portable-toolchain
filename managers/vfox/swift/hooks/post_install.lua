@@ -5,7 +5,7 @@ local q = swiftorg.q
 
 local function run(command)
     print("swift: " .. command)
-    local code = os.execute(command)
+    local code = compat.execute(command)
     if code ~= 0 and code ~= true then
         error("swift: command failed (exit " .. tostring(code) .. "): " .. command)
     end
