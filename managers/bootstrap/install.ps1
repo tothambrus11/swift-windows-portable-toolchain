@@ -101,10 +101,17 @@ if ($needSysroot) {
 # 5. select it: user PATH + SDKROOT (the other variables are not needed: clang.cfg points clang at the sysroot)
 $envj = Get-Content -Raw "$tc\mise-env.json" | ConvertFrom-Json
 if (-not $NoModifyPath) {
+  # Edit the raw REG_EXPAND_SZ value: [Environment]::SetEnvironmentVariable(.., 'User') would store it as REG_SZ and
+  # leave entries like %USERPROFILE%\.dotnet\tools unexpanded, i.e. relative - which makes the asserts toolchain's
+  # swift-frontend assert ("virtual path not absolute").
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
   $mine = [regex]::Escape((Join-Path $Root 'toolchains') + '\')
-  $userPath = @(([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') | Where-Object { $_ -and $_ -notmatch "^$mine" })
-  [Environment]::SetEnvironmentVariable('Path', ((@($envj.path) + $userPath) -join ';'), 'User')
-  [Environment]::SetEnvironmentVariable('SDKROOT', $envj.env.SDKROOT, 'User')
+  $userPath = @(("$($key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'))" -split ';') | Where-Object { $_ -and $_ -notmatch "^$mine" })
+  $key.SetValue('Path', ((@($envj.path) + $userPath) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+  $key.SetValue('SDKROOT', $envj.env.SDKROOT, [Microsoft.Win32.RegistryValueKind]::String)
+  $key.Close()
+  # tell Explorer & co. that the environment changed (a no-op SetEnvironmentVariable broadcasts WM_SETTINGCHANGE)
+  [Environment]::SetEnvironmentVariable('SWIFT_PORTABLE_ROOT', $Root, 'User')
   $env:Path = (@($envj.path) -join ';') + ';' + $env:Path; $env:SDKROOT = $envj.env.SDKROOT
   Write-Host "==> Swift $SwiftVersion selected (user PATH + SDKROOT). Open a new terminal, then: swift --version" -ForegroundColor Green
 } else {

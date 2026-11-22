@@ -16,7 +16,7 @@
                                                ],
                                        "hash":  [
                                                     "a4f1369833f77de28dbac998c8debe1c1d6044410dc6380238ae61a0d7ce5f77",
-                                                    "c644a714f6919a35decbcca0cde77b2411ac018034fc9a43caf71978845b8270"
+                                                    "89e1bfcb8f98a6c24929c92f2aa9bfa5af11b83bcc94ca074941c63954a9b828"
                                                 ]
                                    },
                          "arm64":  {
@@ -26,7 +26,7 @@
                                                ],
                                        "hash":  [
                                                     "ef45204347252878d867549171ad54cb95f26996dbcd3b881a95809b55b914e3",
-                                                    "c644a714f6919a35decbcca0cde77b2411ac018034fc9a43caf71978845b8270"
+                                                    "89e1bfcb8f98a6c24929c92f2aa9bfa5af11b83bcc94ca074941c63954a9b828"
                                                 ]
                                    }
                      },
@@ -41,7 +41,7 @@
                                      "    if ($LASTEXITCODE) { throw \"swift-portable: extracting the toolchain archive failed (exit $LASTEXITCODE)\" }",
                                      "    Remove-Item \"$dir\\swift-toolchain.archive\"",
                                      "} else {",
-                                     "    & $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part swift -NoAsserts -Target $dir -SwiftVersion $version -Arch $spArch -InstallerPath \"$dir\\swift-installer.exe\"",
+                                     "    & $spPs -NoProfile -ExecutionPolicy Bypass -File $spScript -Part swift -Target $dir -SwiftVersion $version -Arch $spArch -InstallerPath \"$dir\\swift-installer.exe\"",
                                      "    if ($LASTEXITCODE) { throw \"swift-portable: unpacking the swift.org installer failed (exit $LASTEXITCODE)\" }",
                                      "}",
                                      "foreach ($spSub in 'Toolchains', 'Runtimes', 'Platforms') {",
