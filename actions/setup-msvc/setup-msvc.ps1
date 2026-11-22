@@ -564,6 +564,19 @@ function Install-Portable {
     } else { Write-Host "    (no Swift SDK modulemaps found; SDKROOT=$sdkRoot) - only clang.cfg is written" }
     # clang (and swiftc, which links and imports C through clang) reads <clang dir>/clang.cfg by default.
     # Backslashes must be doubled; forward slashes crash swift-frontend's VFS ("Paths should not contain traversal components").
+    # The MSVC STL refuses older clangs (yvals_core.h: STL1000 "expected Clang NN or newer"), e.g. 14.52 needs
+    # clang 22 while Swift 6.4's clang is older. C++ interop / C++ targets then fail; allow the mismatch.
+    $clangExe = @('clang.exe', 'clang') | ForEach-Object { Join-Path $toolchainBin $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $yvals = Join-Path $vc 'include/yvals_core.h'
+    if ($clangExe -and (Test-Path $yvals)) {
+      $cv = [regex]::Match((& $clangExe --version | Out-String), 'clang version (\d+)')
+      $sv = [regex]::Match((Get-Content -Raw $yvals), '__clang_major__\s*<\s*(\d+)')
+      if ($cv.Success -and $sv.Success -and [int]$cv.Groups[1].Value -lt [int]$sv.Groups[1].Value) {
+        Write-Host "::warning title=setup-msvc::MSVC STL $($vcRoot.Name) expects clang $($sv.Groups[1].Value)+, the Swift toolchain has clang $($cv.Groups[1].Value): adding -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH to clang.cfg (or pick an older msvc-version, e.g. 14.44)"
+        $cfgExtra += '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH'
+        Set-Out 'stl-mismatch' 'true'
+      }
+    }
     $sysNative = [IO.Path]::GetFullPath($sysroot)
     if ($IsWindows) { $sysNative = $sysNative.Replace('/', '\') }
     foreach ($cfg in 'clang.cfg', 'clang++.cfg') {

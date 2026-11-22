@@ -314,12 +314,14 @@ $stats.total_s = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 if (-not $KeepDownloads) { Remove-Item -Recurse -Force $dl -ErrorAction SilentlyContinue }
 $stats | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $Target 'setup-stats.json') -Encoding UTF8
 $stats | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
-$env:Path = "$toolchainBin;$runtimeBin;$env:Path"
+# Runtime first (like the official installer): before 6.3 the toolchain's usr/bin also holds its own
+# Foundation.dll/swiftCore.dll etc., which must not shadow the runtime used by built programs.
+$env:Path = "$runtimeBin;$toolchainBin;$env:Path"
 $env:SDKROOT = "$sdkRoot\"
 if ($env:GITHUB_PATH) {
-  # GITHUB_PATH prepends each line, so the last line written ends up first
-  Add-Content -Path $env:GITHUB_PATH -Value $runtimeBin -Encoding utf8
+  # GITHUB_PATH prepends each line, so the last line written ends up first (runtime, then toolchain)
   Add-Content -Path $env:GITHUB_PATH -Value $toolchainBin -Encoding utf8
+  Add-Content -Path $env:GITHUB_PATH -Value $runtimeBin -Encoding utf8
 }
 if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value "SDKROOT=$sdkRoot\" -Encoding utf8 }
 if ($env:GITHUB_OUTPUT) {
