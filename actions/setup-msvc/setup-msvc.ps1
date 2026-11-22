@@ -577,6 +577,30 @@ function Install-Portable {
         Set-Out 'stl-mismatch' 'true'
       }
     }
+    # Swift 6.2.x ships swift_Builtin_float.lib (an import library) but not swift_Builtin_float.dll. MSVC link.exe
+    # drops the unused import, lld-link keeps it, so every Foundation/WinSDK program fails with 0xC0000135.
+    # Delay-load SDK import libraries whose DLL is not shipped: the DLL is then only needed if actually called.
+    if ($sdkRoot) {
+      $triple = @{ x64 = 'x86_64'; arm64 = 'aarch64'; x86 = 'i686' }[$a]
+      $swLib = Join-Path $sdkRoot "usr/lib/swift/windows/$triple"
+      $swRoot = Split-Path (Split-Path (Split-Path (Split-Path $toolchainBin)))
+      $dllDirs = @($toolchainBin) + @(Get-ChildItem (Join-Path $swRoot 'Runtimes') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'usr/bin' })
+      $missingDlls = @()
+      foreach ($lib in Get-ChildItem $swLib -Filter '*.lib' -ErrorAction SilentlyContinue) {
+        $dll = "$($lib.BaseName).dll"
+        if ($lib.Length -gt 1MB) { continue }
+        $txt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($lib.FullName))
+        if ($txt.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }   # static archive
+        if (@($dllDirs | Where-Object { Test-Path (Join-Path $_ $dll) }).Count -eq 0) { $missingDlls += $dll }
+      }
+      if ($missingDlls.Count -gt 0 -and (Test-Path (Join-Path $vc "lib/$a/delayimp.lib"))) {
+        Write-Host "::notice title=setup-msvc::Swift runtime lacks $($missingDlls -join ', ') (import libs in the SDK): delay-loading them via clang.cfg"
+        $cfgExtra += '--start-no-unused-arguments'
+        foreach ($d in $missingDlls) { $cfgExtra += "-Wl,/delayload:$d" }
+        $cfgExtra += @('-Wl,delayimp.lib', '--end-no-unused-arguments')
+        Set-Out 'delayload' ($missingDlls -join ',')
+      }
+    }
     $sysNative = [IO.Path]::GetFullPath($sysroot)
     if ($IsWindows) { $sysNative = $sysNative.Replace('/', '\') }
     foreach ($cfg in 'clang.cfg', 'clang++.cfg') {
