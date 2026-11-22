@@ -1,0 +1,154 @@
+name: 'Setup MSVC CRT + Windows SDK (installed or portable)'
+description: >-
+  Provides a vcvars-equivalent MSVC + Windows SDK environment. Reuses the runner's Visual Studio when it has
+  the requested toolset and SDK (like compnerd/gha-setup-vsdevenv), otherwise downloads the MSVC CRT
+  (Visual Studio channel manifest) and the Windows SDK (NuGet) from Microsoft into a /winsysroot-style
+  directory. Works on Windows, Linux and macOS (cross-compilation sysroot).
+branding:
+  icon: 'package'
+  color: 'blue'
+
+inputs:
+  arch:
+    description: "Target architecture: x64, arm64 or x86 (amd64/aarch64 accepted). Default: the runner's architecture."
+    default: ''
+  host-arch:
+    description: "Host architecture for installed mode (vcvarsall host_arch). Default: the runner's architecture."
+    default: ''
+  host_arch:
+    description: 'Alias of host-arch (gha-setup-vsdevenv compatibility).'
+    default: ''
+  winsdk:
+    description: >-
+      Windows SDK version, e.g. 10.0.26100.0 or 10.0.22621.0, or 'latest'. Portable mode maps 10.0.X.0 to the
+      newest NuGet Microsoft.Windows.SDK.CPP 10.0.X.* package; an exact NuGet version (10.0.26100.4188) is also accepted.
+    default: 'latest'
+  msvc-version:
+    description: >-
+      MSVC toolset (vcvars_ver), e.g. 14.44, 14.50, 14.52, or 'latest' (= the installed VS default toolset in
+      installed mode, the channel's default toolset in portable mode).
+    default: 'latest'
+  toolset_version:
+    description: 'Alias of msvc-version (gha-setup-vsdevenv compatibility).'
+    default: ''
+  vs-channel:
+    description: "Portable mode: Visual Studio channel to read the CRT from: '18' (VS 2026, has 14.29-14.5x), '17' (VS 2022) or a channel URL."
+    default: '18'
+  mode:
+    description: "auto (installed VS if it satisfies the request, else portable; always portable off Windows), installed, or portable."
+    default: 'auto'
+  crt-static:
+    description: 'Portable mode: also fetch the static CRT (libcmt, libcpmt, libvcruntime; +50-70 MB). Needed by plain `clang foo.c` (defaults to /MT).'
+    default: 'true'
+  debug-libs:
+    description: 'Portable mode: keep the debug CRT libraries (msvcrtd, ...).'
+    default: 'false'
+  swift-toolchain:
+    description: >-
+      Portable mode: Swift toolchain to wire to the sysroot (writes clang.cfg/clang++.cfg next to its clang and
+      places the Swift ucrt/WinSDK/vcruntime modulemaps). 'auto' = the swift.exe on PATH (Windows), 'none', or a path
+      to the toolchain (its usr/bin).
+    default: 'auto'
+  modulemaps:
+    description: "Portable mode: how Swift's modulemaps are made visible: copy (into the sysroot), overlay (clang VFS overlay in clang.cfg), none."
+    default: 'copy'
+  export-cc:
+    description: >-
+      Portable mode: export CC/CXX. 'false' (default), 'clang-cl' (the swift toolchain's clang-cl, else the one on
+      PATH; needed by CMake C/C++ projects since there is no cl.exe), or an explicit compiler path.
+      Do not set this for SwiftPM builds: SwiftPM uses CC as its clang.
+    default: 'false'
+  vs-components:
+    description: 'Installed mode: extra VS components the instance must have (semicolon separated; vswhere -requires).'
+    default: ''
+  components:
+    description: 'Alias of vs-components (gha-setup-vsdevenv compatibility).'
+    default: ''
+  accept-license:
+    description: >-
+      Required ('true') for portable mode: you accept the Microsoft Visual Studio (Build Tools) license terms for the
+      MSVC CRT and the Windows SDK license terms. The license URLs are printed in the log. Ignored in installed mode.
+    default: 'false'
+  install-dir:
+    description: 'Portable mode: where to create the sysroot. Default: $RUNNER_TEMP/setup-msvc.'
+    default: ''
+  cache:
+    description: >-
+      Portable mode: cache the sysroot with actions/cache in YOUR repository's cache (opt-in, default false).
+      This stores Microsoft binaries in your repo's Actions cache; make sure that is acceptable under the license terms
+      for your use. Never share the cache across repositories.
+    default: 'false'
+
+outputs:
+  mode:
+    description: "'installed' or 'portable'"
+    value: ${{ steps.install.outputs.mode || steps.resolve.outputs.mode }}
+  msvc-version:
+    description: 'Full MSVC toolset version (VCToolsVersion), e.g. 14.44.35207'
+    value: ${{ steps.install.outputs.msvc-version || steps.resolve.outputs.msvc-version }}
+  winsdk-version:
+    description: 'Windows SDK version, e.g. 10.0.26100.0'
+    value: ${{ steps.install.outputs.winsdk-version || steps.resolve.outputs.winsdk-version }}
+  sysroot:
+    description: 'Portable mode: the /winsysroot root (contains VC/ and Windows Kits/). Empty in installed mode.'
+    value: ${{ steps.install.outputs.sysroot }}
+  vc-tools-dir:
+    description: 'VCToolsInstallDir without the trailing separator'
+    value: ${{ steps.install.outputs.vc-tools-dir || steps.resolve.outputs.vc-tools-dir }}
+  winsdk-dir:
+    description: 'WindowsSdkDir without the trailing separator'
+    value: ${{ steps.install.outputs.winsdk-dir || steps.resolve.outputs.winsdk-dir }}
+  install_path:
+    description: 'Installed mode: Visual Studio installation path (gha-setup-vsdevenv compatible name)'
+    value: ${{ steps.resolve.outputs.vs-install-path }}
+  vs-install-path:
+    description: 'Installed mode: Visual Studio installation path'
+    value: ${{ steps.resolve.outputs.vs-install-path }}
+  swift-toolchain:
+    description: 'Portable mode: the Swift toolchain usr/bin that was wired (clang.cfg written), if any'
+    value: ${{ steps.install.outputs.swift-toolchain }}
+  cache-hit:
+    description: "Portable mode: 'true' when the sysroot was reused (cache restore) instead of downloaded"
+    value: ${{ steps.install.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: pwsh
+      env:
+        SMSVC_ARCH: ${{ inputs.arch }}
+        SMSVC_HOST_ARCH: ${{ inputs.host-arch || inputs.host_arch }}
+        SMSVC_WINSDK: ${{ inputs.winsdk }}
+        SMSVC_MSVC_VERSION: ${{ inputs.toolset_version || inputs.msvc-version }}
+        SMSVC_VS_CHANNEL: ${{ inputs.vs-channel }}
+        SMSVC_MODE: ${{ inputs.mode }}
+        SMSVC_CRT_STATIC: ${{ inputs.crt-static }}
+        SMSVC_DEBUG_LIBS: ${{ inputs.debug-libs }}
+        SMSVC_VS_COMPONENTS: ${{ inputs.vs-components || inputs.components }}
+        SMSVC_ACCEPT_LICENSE: ${{ inputs.accept-license }}
+        SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}
+      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase resolve'
+
+    - id: cache
+      if: inputs.cache == 'true' && steps.resolve.outputs.mode == 'portable'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.resolve.outputs.install-dir }}
+        key: ${{ steps.resolve.outputs.cache-key }}
+
+    - id: install
+      if: steps.resolve.outputs.mode == 'portable'
+      shell: pwsh
+      env:
+        SMSVC_ARCH: ${{ inputs.arch }}
+        SMSVC_HOST_ARCH: ${{ inputs.host-arch || inputs.host_arch }}
+        SMSVC_WINSDK: ${{ inputs.winsdk }}
+        SMSVC_MSVC_VERSION: ${{ inputs.toolset_version || inputs.msvc-version }}
+        SMSVC_MODE: ${{ inputs.mode }}
+        SMSVC_DEBUG_LIBS: ${{ inputs.debug-libs }}
+        SMSVC_SWIFT_TOOLCHAIN: ${{ inputs.swift-toolchain }}
+        SMSVC_MODULEMAPS: ${{ inputs.modulemaps }}
+        SMSVC_EXPORT_CC: ${{ inputs.export-cc }}
+        SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}
+      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase install'

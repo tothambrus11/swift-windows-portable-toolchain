@@ -1,0 +1,417 @@
+name: setup-msvc
+
+on:
+  push:
+    branches: [exp/setup-msvc-action]
+  workflow_dispatch:
+    inputs:
+      hylo:
+        description: 'Run the Hylo integration jobs'
+        type: boolean
+        default: true
+      core:
+        description: 'Run the core matrix'
+        type: boolean
+        default: true
+
+jobs:
+  # 1. VS present, mode auto -> installed; cl + swift
+  installed:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.core) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[hylo-only]')) }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults: { run: { shell: pwsh } }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Swift (SwiftyLab, like Hylo)
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: '6.2.4'
+      - id: msvc
+        uses: ./actions/setup-msvc
+        with:
+          winsdk: '10.0.26100.0'
+      - name: Check mode/outputs
+        run: |
+          '${{ toJSON(steps.msvc.outputs) }}'
+          if ('${{ steps.msvc.outputs.mode }}' -ne 'installed') { throw 'expected installed mode' }
+          if ($env:WindowsSDKVersion -ne '10.0.26100.0\') { throw "WindowsSDKVersion=$env:WindowsSDKVersion" }
+          Get-Command cl.exe, link.exe | Format-Table Source
+          "VCToolsVersion=$env:VCToolsVersion INCLUDE=$env:INCLUDE"
+      - name: Smoke (cl + swift)
+        run: ./actions/tests/swift-smoke.ps1 -Label installed -Cases cl, hello, foundation, winsdk, swiftpm, ctarget
+
+  # 2./4. VS hidden, mode auto -> portable; Swift matrix subset (x64 + arm64)
+  portable-swift:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.core) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[hylo-only]')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64, swift: '6.4.3' }
+          - { runner: windows-11-arm, arch: arm64, swift: '6.4.3' }
+          - { runner: windows-latest, arch: x64, swift: '6.2.4', modulemaps: overlay }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    defaults: { run: { shell: pwsh } }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools, Windows Kits, LLVM
+        run: ./xwin/hide-vs.ps1
+      - name: License gate (must refuse without accept-license)
+        id: nolicense
+        continue-on-error: true
+        uses: ./actions/setup-msvc
+        with:
+          install-dir: ${{ runner.temp }}/nolicense
+      - name: Check license gate
+        run: |
+          if ('${{ steps.nolicense.outcome }}' -ne 'failure') { throw 'setup-msvc ran without accept-license' }
+          if (Test-Path '${{ runner.temp }}/nolicense/VC') { throw 'downloaded without license acceptance' }
+          'OK: refused without accept-license'
+      - uses: ./actions/setup-swift-portable
+        with:
+          swift-version: ${{ matrix.swift }}
+      - id: msvc
+        uses: ./actions/setup-msvc
+        with:
+          accept-license: true
+          modulemaps: ${{ matrix.modulemaps || 'copy' }}
+      - name: Check mode/outputs
+        run: |
+          '${{ toJSON(steps.msvc.outputs) }}'
+          if ('${{ steps.msvc.outputs.mode }}' -ne 'portable') { throw 'expected portable mode' }
+          if (-not '${{ steps.msvc.outputs.swift-toolchain }}') { throw 'swift toolchain not wired' }
+          if (Get-Command cl.exe -ErrorAction SilentlyContinue) { throw 'cl.exe is reachable' }
+          Get-ChildItem '${{ steps.msvc.outputs.sysroot }}' -Directory -Recurse -Depth 4 | Select-Object -First 60 -ExpandProperty FullName
+          "rc/mt: $((Get-Command rc.exe, mt.exe -ErrorAction SilentlyContinue).Source -join ', ')"
+      - name: Smoke (swift)
+        run: ./actions/tests/swift-smoke.ps1 -Label "portable-${{ matrix.arch }}-${{ matrix.swift }}"
+
+  # 3. version selection: env must point at the requested toolset / SDK
+  selection:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.core) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[hylo-only]')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mode: auto, msvc: '14.44', winsdk: '10.0.22621.0' }
+          - { mode: auto, msvc: '14.40', winsdk: '10.0.26100.0' }
+          - { mode: portable, msvc: latest, winsdk: '10.0.26100.0' }
+          - { mode: portable, msvc: '14.44', winsdk: '10.0.22621.0', channel: '17' }
+          - { mode: portable, msvc: '14.50', winsdk: latest, cache: 'true' }
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults: { run: { shell: pwsh } }
+    steps:
+      - uses: actions/checkout@v4
+      - id: msvc
+        uses: ./actions/setup-msvc
+        with:
+          mode: ${{ matrix.mode }}
+          msvc-version: ${{ matrix.msvc }}
+          winsdk: ${{ matrix.winsdk }}
+          vs-channel: ${{ matrix.channel || '18' }}
+          cache: ${{ matrix.cache || 'false' }}
+          accept-license: true
+      - name: Verify versions
+        run: |
+          '${{ toJSON(steps.msvc.outputs) }}'
+          $mode = '${{ steps.msvc.outputs.mode }}'
+          "mode=$mode VCToolsVersion=$env:VCToolsVersion WindowsSDKVersion=$env:WindowsSDKVersion UCRTVersion=$env:UCRTVersion"
+          "INCLUDE=$env:INCLUDE"; "LIB=$env:LIB"
+          $msvc = '${{ matrix.msvc }}'; $sdk = '${{ matrix.winsdk }}'
+          if ($msvc -ne 'latest' -and -not $env:VCToolsVersion.StartsWith("$msvc.")) { throw "VCToolsVersion $env:VCToolsVersion != $msvc" }
+          if ($sdk -ne 'latest' -and $env:WindowsSDKVersion -ne "$sdk\") { throw "WindowsSDKVersion $env:WindowsSDKVersion != $sdk" }
+          if ($env:INCLUDE -notmatch [regex]::Escape($env:VCToolsVersion)) { throw 'INCLUDE does not contain the toolset' }
+          if ($env:LIB -notmatch [regex]::Escape($env:WindowsSDKVersion.TrimEnd('\'))) { throw 'LIB does not contain the SDK' }
+          Set-Content ver.c '#include <stdio.h>', '#include <crtversion.h>', '#include <windows.h>', '#include <sdkddkver.h>',
+            'int main(void){ printf("CRT %d.%d.%d WDK_NTDDI 0x%08X\n", _VC_CRT_MAJOR_VERSION, _VC_CRT_MINOR_VERSION, _VC_CRT_BUILD_VERSION, (unsigned)WDK_NTDDI_VERSION); return GetCurrentProcessId() == 0; }'
+          if ($mode -eq 'installed') { cl.exe /nologo ver.c /Fe:ver.exe; if ($LASTEXITCODE) { throw 'cl failed' } }
+          else {
+            $cc = 'C:\Program Files\LLVM\bin\clang-cl.exe'
+            & $cc /nologo -fuse-ld=lld ver.c /Fe:ver.exe; if ($LASTEXITCODE) { throw 'clang-cl (env) failed' }
+            & $cc /nologo -fuse-ld=lld /winsysroot '${{ steps.msvc.outputs.sysroot }}' /MT ver.c /Fe:ver-mt.exe; if ($LASTEXITCODE) { throw 'clang-cl /winsysroot /MT failed' }
+            ./ver-mt.exe
+          }
+          $o = ./ver.exe; $o
+          $vc = $env:VCToolsVersion.Split('.')
+          if ($o -notmatch "CRT $($vc[0])\.$([int]$vc[1])\.") { throw "compiled CRT version mismatch: $o" }
+          $ntddi = @{ '22621' = '0x0A00000C'; '26100' = '0x0A000010' }[$env:WindowsSDKVersion.Split('.')[2]]
+          if ($ntddi -and $o -notmatch "WDK_NTDDI $ntddi") { throw "compiled against the wrong SDK headers: $o (want $ntddi)" }
+          "## selection ${{ matrix.mode }} msvc=${{ matrix.msvc }} winsdk=${{ matrix.winsdk }}: mode $mode, $o" >> $env:GITHUB_STEP_SUMMARY
+
+  # 5. Linux / macOS: same sysroot, cross-compile with clang-cl + lld-link
+  cross:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.core) || (github.event_name == 'push' && !contains(github.event.head_commit.message, '[hylo-only]')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find/install clang-cl + lld-link
+        shell: bash
+        run: |
+          set -eux
+          if [ "$RUNNER_OS" = Linux ]; then
+            v=$(ls -d /usr/lib/llvm-* | sed 's/.*llvm-//' | sort -n | tail -1)
+            [ -x /usr/lib/llvm-$v/bin/lld-link ] || { sudo apt-get update -qq; sudo apt-get install -y -qq lld-$v; }
+            echo "/usr/lib/llvm-$v/bin" >> "$GITHUB_PATH"
+          else
+            brew install llvm lld >/dev/null
+            echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+            echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          fi
+      - id: msvc
+        uses: ./actions/setup-msvc
+        with:
+          arch: x64
+          accept-license: true
+      - name: Cross-compile x64 (C, C++, WinSDK) with clang-cl /winsysroot and with INCLUDE/LIB only
+        shell: bash
+        run: |
+          set -eux
+          clang-cl --version; lld-link --version
+          S='${{ steps.msvc.outputs.sysroot }}'
+          ls "$S" "$S/VC/Tools/MSVC" "$S/Windows Kits/10/Lib"
+          cat > hello.c <<'EOF'
+          #include <stdio.h>
+          #include <math.h>
+          #include <Windows.h>
+          #include <ShlObj.h>
+          #pragma comment(lib, "user32")
+          int main(void) { printf("hello %f %p\n", sqrt(2.0), (void*)MessageBoxA); return (int)GetTickCount64() == -1; }
+          EOF
+          cat > hello.cpp <<'EOF'
+          #include <iostream>
+          #include <vector>
+          #include <string>
+          #include <map>
+          #include <filesystem>
+          #include <windows.h>
+          int main() { std::vector<std::string> v{"a","b"}; std::map<int,int> m{{1,2}}; std::cout << v.size() << m[1] << std::filesystem::path("x/y").filename() << GetCurrentProcessId() << std::endl; }
+          EOF
+          T=--target=x86_64-pc-windows-msvc
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" hello.c /Fe:hello-md.exe /MD
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" hello.c /Fe:hello-mt.exe /MT
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" /EHsc /std:c++17 hello.cpp /Fe:hellocpp.exe /MD
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" /EHsc /std:c++17 hello.cpp /Fe:hellocpp-mt.exe /MT
+          # env only (INCLUDE / LIB exported by the action)
+          echo "INCLUDE=$INCLUDE"; echo "LIB=$LIB"
+          clang-cl $T -fuse-ld=lld hello.c /Fe:hello-env.exe
+          file *.exe
+          for f in *.exe; do file "$f" | grep -q 'PE32+ executable' ; done
+          echo "## cross ${{ matrix.os }} x64: $(ls *.exe | tr '\n' ' ') built" >> "$GITHUB_STEP_SUMMARY"
+      - id: msvc-arm64
+        uses: ./actions/setup-msvc
+        with:
+          arch: arm64
+          install-dir: ${{ runner.temp }}/setup-msvc-arm64
+          accept-license: true
+      - name: Cross-compile arm64
+        shell: bash
+        run: |
+          set -eux
+          S='${{ steps.msvc-arm64.outputs.sysroot }}'
+          T=--target=aarch64-pc-windows-msvc
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" hello.c /Fe:hello-a64.exe /MD
+          clang-cl $T -fuse-ld=lld /winsysroot "$S" /EHsc /std:c++17 hello.cpp /Fe:hellocpp-a64.exe /MT
+          file *-a64.exe
+          file hello-a64.exe | grep -qi 'Aarch64\|ARM64'
+
+  # 6. Hylo integration: Windows SwiftPM job (release) with setup-msvc replacing gha-setup-vsdevenv
+  hylo-spm:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.hylo) || contains(github.event.head_commit.message, '[hylo]') }}
+    name: "Hylo SPM release (${{ matrix.vs }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        vs: [vs-present, vs-hidden]
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      spm-build-options: -Xswiftc -enable-testing --explicit-target-dependency-import-check error
+      spm-test-options: --parallel
+      swift-version: '6.2.4'
+      HYLO_LLVM_BUILD_RELEASE: 20251207-115516
+      HYLO_LLVM_VERSION: '20.1.6'
+      ACTIONS_RUNNER_DISABLE_NODE_MAGLEV: 1
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: action }
+      - uses: actions/checkout@v4
+        with:
+          repository: hylo-lang/hylo
+          ref: main
+          submodules: true
+          show-progress: false
+          path: hylo
+      - name: Hylo revision
+        run: git -C hylo log -1 --format='%H %s'
+        shell: bash
+      - name: Hide Visual Studio
+        if: matrix.vs == 'vs-hidden'
+        shell: pwsh
+        run: ./action/xwin/hide-vs.ps1
+      - name: Set compiler version
+        working-directory: hylo
+        run: ./Tools/set-hc-version.sh
+        shell: bash
+      - name: Set up LLVM
+        uses: hylo-lang/get-llvm@v0.3.0
+        with:
+          llvmVersion: ${{ env.HYLO_LLVM_VERSION }}
+          llvmBuildRelease: ${{ env.HYLO_LLVM_BUILD_RELEASE }}
+          llvmBuildConfig: MinSizeRel
+          addToPkgConfigPath: true
+          addToPath: true
+      - name: Set up Swift (SwiftyLab)
+        if: matrix.vs == 'vs-present'
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: ${{ env.swift-version }}
+      - name: Set up Swift (portable)
+        if: matrix.vs == 'vs-hidden'
+        uses: ./action/actions/setup-swift-portable
+        with:
+          swift-version: ${{ env.swift-version }}
+      - name: Set up MSVC (replaces compnerd/gha-setup-vsdevenv)
+        id: msvc
+        uses: ./action/actions/setup-msvc
+        with:
+          winsdk: "10.0.26100.0"
+          accept-license: true
+      - name: Report
+        shell: pwsh
+        run: |
+          '${{ toJSON(steps.msvc.outputs) }}'
+          swift --version
+          $want = if ('${{ matrix.vs }}' -eq 'vs-present') { 'installed' } else { 'portable' }
+          if ('${{ steps.msvc.outputs.mode }}' -ne $want) { throw "expected $want" }
+      - name: Build the dependencies of build tools
+        shell: pwsh
+        run: |
+          echo 'SPM_BUILD_TOOL_SUPPORT_NO_REENTRANT_BUILD=1' >> $env:GITHUB_ENV
+          $env:SPM_BUILD_TOOL_SUPPORT_NO_REENTRANT_BUILD = '1'
+          swift build ${{ env.spm-build-options }} --target BuildToolDependencies
+          if (-not $?) { swift build ${{ env.spm-build-options }} --target BuildToolDependencies }
+        working-directory: hylo
+      - name: Build
+        shell: pwsh
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          swift build -c release ${{ env.spm-build-options }} --build-tests
+          if (-not $?) {
+            # Hylo's retry (https://github.com/apple/swift/issues/72121), then (our addition) the full build again
+            swift build ${{ env.spm-build-options }} --target BuildToolDependencies
+            swift build -c release ${{ env.spm-build-options }} --build-tests
+          }
+          "build took $([math]::Round($sw.Elapsed.TotalMinutes,1)) min"
+        working-directory: hylo
+      - name: Test
+        shell: pwsh
+        timeout-minutes: 75
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          swift test --skip-build -c release ${{ env.spm-build-options }} ${{ env.spm-test-options }} 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP/test.log
+          $ok = $LASTEXITCODE -eq 0
+          if (-not $ok) { swift test -c release ${{ env.spm-test-options }} 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP/test2.log; $ok = $LASTEXITCODE -eq 0 }
+          $tail = Get-Content $env:RUNNER_TEMP/test*.log | Select-String -Pattern 'Executed|passed|failed|Test run with' | Select-Object -Last 6
+          "## Hylo SPM ${{ matrix.vs }} (mode ${{ steps.msvc.outputs.mode }}): test $(if ($ok) {'OK'} else {'FAILED'}) in $([math]::Round($sw.Elapsed.TotalMinutes,1)) min`n``````n$($tail -join "`n")`n``````" >> $env:GITHUB_STEP_SUMMARY
+          if (-not $ok) { exit 1 }
+        working-directory: hylo
+
+  # 6b. Hylo CMake/Ninja job (release)
+  hylo-cmake:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.hylo) || contains(github.event.head_commit.message, '[hylo]') }}
+    name: "Hylo CMake release (${{ matrix.vs }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        vs: [vs-present, vs-hidden]
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      swift-version: '6.2.4'
+      HYLO_LLVM_BUILD_RELEASE: 20251207-115516
+      HYLO_LLVM_VERSION: '20.1.6'
+      ACTIONS_RUNNER_DISABLE_NODE_MAGLEV: 1
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: action }
+      - uses: actions/checkout@v4
+        with:
+          repository: hylo-lang/hylo
+          ref: main
+          submodules: true
+          show-progress: false
+          path: hylo
+      - name: Hide Visual Studio
+        if: matrix.vs == 'vs-hidden'
+        shell: pwsh
+        run: ./action/xwin/hide-vs.ps1
+      - name: Set compiler version
+        working-directory: hylo
+        run: ./Tools/set-hc-version.sh
+        shell: bash
+      - name: Set up LLVM
+        uses: hylo-lang/get-llvm@v0.3.0
+        id: get-llvm
+        with:
+          llvmVersion: ${{ env.HYLO_LLVM_VERSION }}
+          llvmBuildRelease: ${{ env.HYLO_LLVM_BUILD_RELEASE }}
+          llvmBuildConfig: 'MinSizeRel'
+          addToPkgConfigPath: true
+          addToPath: true
+      - name: Set up Swift (SwiftyLab)
+        if: matrix.vs == 'vs-present'
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: ${{ env.swift-version }}
+      - name: Set up Swift (portable)
+        if: matrix.vs == 'vs-hidden'
+        uses: ./action/actions/setup-swift-portable
+        with:
+          swift-version: ${{ env.swift-version }}
+      - name: Set up MSVC (replaces compnerd/gha-setup-vsdevenv)
+        id: msvc
+        uses: ./action/actions/setup-msvc
+        with:
+          winsdk: "10.0.26100.0"
+          accept-license: true
+          export-cc: ${{ matrix.vs == 'vs-hidden' && 'clang-cl' || 'false' }}
+      - name: Set up CMake and Ninja
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: '4.2.0'
+          ninjaVersion: '1.13.2'
+      - name: CMake Configure
+        shell: bash
+        run: >
+          set -exu
+
+          echo "mode=${{ steps.msvc.outputs.mode }} CC=${CC:-} CXX=${CXX:-}"
+
+          LLVM_DIR="${{ steps.get-llvm.outputs.llvmCmakeDirectory }}"
+
+          cmake -G Ninja -S . -B .cmake-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=YES
+          -DLLVM_DIR="$LLVM_DIR"
+        working-directory: hylo
+      - name: Build
+        run: cmake --build hylo/.cmake-build
+      - name: Test
+        timeout-minutes: 75
+        shell: pwsh
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          ctest --output-on-failure --parallel --test-dir hylo/.cmake-build 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP/ctest.log
+          $ok = $LASTEXITCODE -eq 0
+          $tail = Get-Content $env:RUNNER_TEMP/ctest.log | Select-String -Pattern 'tests passed|tests failed|Total Test time' | Select-Object -Last 3
+          "## Hylo CMake ${{ matrix.vs }} (mode ${{ steps.msvc.outputs.mode }}): ctest $(if ($ok) {'OK'} else {'FAILED'}) in $([math]::Round($sw.Elapsed.TotalMinutes,1)) min`n``````n$($tail -join "`n")`n``````" >> $env:GITHUB_STEP_SUMMARY
+          if (-not $ok) { exit 1 }

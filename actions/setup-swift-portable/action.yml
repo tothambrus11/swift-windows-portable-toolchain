@@ -1,0 +1,52 @@
+name: 'Setup Swift (portable, Windows)'
+description: >-
+  Installs the official swift.org Windows toolchain without running the installer (no admin, no registry, no
+  Visual Studio). Combine with actions/setup-msvc for the MSVC CRT + Windows SDK.
+branding:
+  icon: 'feather'
+  color: 'orange'
+inputs:
+  swift-version:
+    description: "Swift release, e.g. 6.2.4 or 6.4.3. Default: the latest release on swift.org."
+    default: ''
+  arch:
+    description: 'x64 or arm64 (default: the runner architecture)'
+    default: ''
+  install-dir:
+    description: 'Default: $RUNNER_TEMP/swift-portable'
+    default: ''
+  no-asserts:
+    description: 'Use the no-asserts toolchain build (smaller)'
+    default: 'false'
+  full:
+    description: 'Also install lldb, python, sourcekit-lsp (ide) and res'
+    default: 'false'
+outputs:
+  toolchain-bin:
+    description: 'Toolchain usr\bin (swift.exe, clang.exe)'
+    value: ${{ steps.install.outputs.toolchain-bin }}
+  sdkroot:
+    description: 'SDKROOT (Windows.sdk)'
+    value: ${{ steps.install.outputs.sdkroot }}
+  swift-version:
+    description: 'Installed Swift version'
+    value: ${{ steps.install.outputs.swift-version }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: pwsh
+      env:
+        SSP_VERSION: ${{ inputs.swift-version }}
+        SSP_ARCH: ${{ inputs.arch }}
+        SSP_DIR: ${{ inputs.install-dir }}
+        SSP_NOASSERTS: ${{ inputs.no-asserts }}
+        SSP_FULL: ${{ inputs.full }}
+      run: |
+        if (-not $IsWindows) { throw 'setup-swift-portable supports Windows runners only' }
+        $dir = if ($env:SSP_DIR) { $env:SSP_DIR } else { Join-Path $env:RUNNER_TEMP 'swift-portable' }
+        $a = @{ Target = $dir; SwiftVersion = $env:SSP_VERSION }
+        if ($env:SSP_ARCH) { $a.Arch = $env:SSP_ARCH }
+        if ($env:SSP_NOASSERTS -eq 'true') { $a.NoAsserts = $true }
+        if ($env:SSP_FULL -eq 'true') { $a.Full = $true }
+        & "$env:GITHUB_ACTION_PATH/install-swift.ps1" @a
