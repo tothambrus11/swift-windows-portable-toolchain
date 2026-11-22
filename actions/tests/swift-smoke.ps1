@@ -2,7 +2,7 @@
 # Runs in the current environment (setup-msvc + a Swift toolchain on PATH). Exits 1 if any case fails.
 param(
   [string]$Work = (Join-Path $env:RUNNER_TEMP 'swift-smoke'),
-  [string[]]$Cases = @('hello', 'foundation', 'winsdk', 'swiftpm', 'ctarget', 'cxx', 'clang'),
+  [string[]]$Cases = @('hello', 'foundation', 'winsdk', 'swiftpm', 'ctarget', 'cxx', 'clang', 'staticlib'),
   [string]$Label = ''
 )
 $ErrorActionPreference = 'Continue'
@@ -113,6 +113,10 @@ if ($Cases -contains 'swiftpm') {
 }
 if ($Cases -contains 'ctarget') { Push-Location cpkg; Invoke-Case 'swiftpm-c-target' { Run swift run CApp } 'CTARGET OK'; Pop-Location }
 if ($Cases -contains 'cxx') { Push-Location cxx; Invoke-Case 'cxx-interop' { Run swiftc -cxx-interoperability-mode=default -I CxxDemo main.swift -o cxx.exe; Run .\cxx.exe } 'CXX OK'; Pop-Location }
+if ($Cases -contains 'staticlib') {
+  Set-Content -Path 'my+lib.swift' -Value 'public func answer() -> Int { 42 }'
+  Invoke-Case 'swiftc-static-library' { Run swiftc -parse-as-library -emit-library -static 'my+lib.swift' -module-name MyLib -o libMyLib.lib; if (Test-Path libMyLib.lib) { 'static library OK' } } 'static library OK'
+}
 if ($Cases -contains 'clang') {
   Set-Content -Path plain.c -Value '#include <stdio.h>', '#include <math.h>', '#include <windows.h>', 'int main(void){ printf("clang ok %llu %f\n", GetTickCount64(), sqrt(2.0)); return 0; }'
   Invoke-Case 'clang-plain-c' { Run clang plain.c -o plain.exe; Run .\plain.exe } 'clang ok'

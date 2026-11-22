@@ -73,6 +73,7 @@ How it behaves:
 | `dia-sdk` | `true` | portable: also fetch the DIA SDK (`<sysroot>/DIA SDK`, ~8 MB) and set `VSINSTALLDIR` to the sysroot. LLVM's CMake package (e.g. Hylo's LLVM) links `diaguids.lib` |
 | `swift-toolchain` | `auto` | portable: the Swift toolchain to wire: `auto` (the `swift.exe` on PATH, Windows), `none`, or a path |
 | `modulemaps` | `copy` | portable: `copy` Swift's modulemaps into the sysroot, `overlay` (a clang VFS overlay referenced from `clang.cfg`), or `none` |
+| `link-shim` | `true` | portable (Windows): put `link.exe` (= the Swift toolchain's `lld-link`) on PATH, for tools that run `link.exe` directly (swiftc `-static` libraries via CMake run `link /lib`, and Git's `/usr/bin/link` would be found otherwise) |
 | `export-cc` | `false` | portable: `clang-cl` exports `CC`/`CXX`=clang-cl (for CMake C/C++), or give an explicit path |
 | `vs-components` (`components`) | – | installed: extra VS components the instance must have (`;`-separated, `vswhere -requires`) |
 | `accept-license` | `false` | **must be `true` for portable mode** (see [Licenses](#licenses)) |

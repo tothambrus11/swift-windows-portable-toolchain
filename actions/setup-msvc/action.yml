@@ -55,6 +55,9 @@ inputs:
   modulemaps:
     description: "Portable mode: how Swift's modulemaps are made visible: copy (into the sysroot), overlay (clang VFS overlay in clang.cfg), none."
     default: 'copy'
+  link-shim:
+    description: "Portable mode (Windows): put a link.exe (= the Swift toolchain's lld-link) on PATH for tools that call link.exe directly (e.g. swiftc -static via CMake). Skipped if a real link.exe is already on PATH."
+    default: 'true'
   export-cc:
     description: >-
       Portable mode: export CC/CXX. 'false' (default), 'clang-cl' (the swift toolchain's clang-cl, else the one on
@@ -154,5 +157,6 @@ runs:
         SMSVC_SWIFT_TOOLCHAIN: ${{ inputs.swift-toolchain }}
         SMSVC_MODULEMAPS: ${{ inputs.modulemaps }}
         SMSVC_EXPORT_CC: ${{ inputs.export-cc }}
+        SMSVC_LINK_SHIM: ${{ inputs.link-shim }}
         SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}
       run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase install; exit 0'

@@ -40,6 +40,9 @@ jobs:
           "VCToolsVersion=$env:VCToolsVersion INCLUDE=$env:INCLUDE"
       - name: Smoke (cl + swift)
         run: ./actions/tests/swift-smoke.ps1 -Label installed -Cases cl, hello, foundation, winsdk, swiftpm, ctarget
+      - name: Informational - swiftc -static with VS link.exe and a '+' in the file name (Hylo CMake LNK1181)
+        continue-on-error: true
+        run: ./actions/tests/swift-smoke.ps1 -Label installed-static -Work $env:RUNNER_TEMP/smoke2 -Cases staticlib
 
   # 2./4. VS hidden, mode auto -> portable; Swift matrix subset (x64 + arm64)
   portable-swift:

@@ -617,6 +617,19 @@ function Install-Portable {
       Write-Host "    wrote $cfgPath"
     }
     Set-Out 'swift-toolchain' $toolchainBin
+    # Tools that call `link.exe` directly (swiftc -emit-library -static -> `link /lib`, CMake's Swift static
+    # libraries, some build scripts) find Git's coreutils /usr/bin/link instead. Provide link.exe = lld-link.
+    $lldLink = Join-Path $toolchainBin 'lld-link.exe'
+    if ($IsWindows -and (Test-True (Get-In 'LINK_SHIM' 'true')) -and (Test-Path $lldLink) -and -not (Get-Command link.exe -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch '\\Git\\' })) {
+      $shimDir = Join-Path $sysroot 'bin'
+      New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+      $shim = Join-Path $shimDir 'link.exe'
+      Remove-Item $shim -Force -ErrorAction SilentlyContinue
+      try { New-Item -ItemType HardLink -Path $shim -Target $lldLink -ErrorAction Stop | Out-Null }
+      catch { Copy-Item $lldLink $shim }
+      $script:linkShim = $shimDir
+      Write-Host "    link.exe shim -> lld-link: $shim"
+    }
   }
 
   # ---- environment (vcvars equivalent)
@@ -647,6 +660,7 @@ function Install-Portable {
     foreach ($cand in "bin/$hostArchP", "bin/$sdkVer/$a", "bin/$a") { if (-not (Test-Path $sdkBin)) { $sdkBin = Join-Path $kits $cand } }
     if (Test-Path $sdkBin) { Add-ToPath (& $nat $sdkBin); Export-Var 'WindowsSdkBinPath' ((& $nat (Join-Path $kits 'bin')) + $ds); Export-Var 'WindowsSdkVerBinPath' ((& $nat (Split-Path $sdkBin)) + $ds) }
   }
+  if ($script:linkShim) { Add-ToPath (& $nat $script:linkShim) }
   if ($exportCc -and $exportCc -notin 'false', 'none', 'no') {
     $cc = $null
     if ($exportCc -in 'true', 'clang-cl') {
