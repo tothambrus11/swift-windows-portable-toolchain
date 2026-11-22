@@ -388,7 +388,7 @@ function New-CaseAliases([string]$sysroot, [string[]]$incDirs, [string[]]$libDir
   foreach ($root in @($incDirs + $libDirs)) {
     foreach ($f in [IO.Directory]::EnumerateFiles($root, '*', [IO.SearchOption]::AllDirectories)) {
       $n = [IO.Path]::GetFileName($f); $l = $n.ToLowerInvariant()
-      if ($l -ne $n) { New-Alias ([IO.Path]::GetDirectoryName($f)) $l $n }
+      if ($l -cne $n) { New-Alias ([IO.Path]::GetDirectoryName($f)) $l $n }
       if ($l.EndsWith('.lib')) {
         # Foo.Lib -> foo.lib already; also UPPERCASE.lib (#pragma comment(lib, "OLDNAMES"), "MSVCRT", ...)
         $stem = [IO.Path]::GetFileNameWithoutExtension($n)
@@ -473,15 +473,14 @@ function Install-Portable {
       $f = Join-Path $dl "$pkg.nupkg"
       Invoke-Download "https://api.nuget.org/v3-flatcontainer/$pkg/$($plan.nugetVersion)/$pkg.$($plan.nugetVersion).nupkg" $f
       $bytes += (Get-Item $f).Length
-      Write-Host "      entries: $((Get-ZipTopDirs $f 3 | Where-Object { $_ -like 'c/*' }) -join ', ')"
       if ($pkg -eq 'microsoft.windows.sdk.cpp') {
         $n = Expand-ZipPrefix $f 'c/Include/' (Join-Path $kits 'Include')
-        if ($IsWindows) { $n += Expand-ZipPrefix $f 'c/bin/' (Join-Path $kits 'bin') }
-      } else {
         $ver = (Get-ChildItem (Join-Path $kits 'Include') -Directory | Select-Object -First 1).Name
+        # SDK tools (rc.exe, mt.exe, ...) of this SDK version only
+        if ($IsWindows) { $n += Expand-ZipPrefix $f "c/bin/$ver/" (Join-Path $kits "bin/$ver") }
+      } else {
         $n = Expand-ZipPrefix $f 'c/ucrt/' (Join-Path $kits "Lib/$ver/ucrt")
         $n += Expand-ZipPrefix $f 'c/um/' (Join-Path $kits "Lib/$ver/um")
-        if ($IsWindows) { $n += Expand-ZipPrefix $f 'c/bin/' (Join-Path $kits 'bin') }
       }
       Write-Host "      ${pkg}: $n files"
       Remove-Item $f -Force

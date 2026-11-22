@@ -128,7 +128,7 @@ runs:
         SMSVC_VS_COMPONENTS: ${{ inputs.vs-components || inputs.components }}
         SMSVC_ACCEPT_LICENSE: ${{ inputs.accept-license }}
         SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}
-      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase resolve'
+      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase resolve; exit 0'
 
     - id: cache
       if: inputs.cache == 'true' && steps.resolve.outputs.mode == 'portable'
@@ -151,4 +151,4 @@ runs:
         SMSVC_MODULEMAPS: ${{ inputs.modulemaps }}
         SMSVC_EXPORT_CC: ${{ inputs.export-cc }}
         SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}
-      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase install'
+      run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1" -Phase install; exit 0'

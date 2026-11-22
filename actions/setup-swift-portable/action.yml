@@ -50,3 +50,4 @@ runs:
         if ($env:SSP_NOASSERTS -eq 'true') { $a.NoAsserts = $true }
         if ($env:SSP_FULL -eq 'true') { $a.Full = $true }
         & "$env:GITHUB_ACTION_PATH/install-swift.ps1" @a
+        exit 0   # robocopy leaves LASTEXITCODE=1 on success; real failures throw
