@@ -43,6 +43,9 @@ inputs:
   debug-libs:
     description: 'Portable mode: keep the debug CRT libraries (msvcrtd, ...).'
     default: 'true'
+  dia-sdk:
+    description: "Portable mode: also fetch the DIA SDK (<sysroot>/DIA SDK, ~8 MB; LLVM's CMake package links diaguids.lib) and set VSINSTALLDIR to the sysroot."
+    default: 'true'
   swift-toolchain:
     description: >-
       Portable mode: Swift toolchain to wire to the sysroot (writes clang.cfg/clang++.cfg next to its clang and
@@ -125,6 +128,7 @@ runs:
         SMSVC_MODE: ${{ inputs.mode }}
         SMSVC_CRT_STATIC: ${{ inputs.crt-static }}
         SMSVC_DEBUG_LIBS: ${{ inputs.debug-libs }}
+        SMSVC_DIA_SDK: ${{ inputs.dia-sdk }}
         SMSVC_VS_COMPONENTS: ${{ inputs.vs-components || inputs.components }}
         SMSVC_ACCEPT_LICENSE: ${{ inputs.accept-license }}
         SMSVC_INSTALL_DIR: ${{ inputs.install-dir }}

@@ -137,6 +137,7 @@ jobs:
             & $cc /nologo -fuse-ld=lld ver.c /Fe:ver.exe; if ($LASTEXITCODE) { throw 'clang-cl (env) failed' }
             & $cc /nologo -fuse-ld=lld /winsysroot '${{ steps.msvc.outputs.sysroot }}' /MT ver.c /Fe:ver-mt.exe; if ($LASTEXITCODE) { throw 'clang-cl /winsysroot /MT failed' }
             ./ver-mt.exe
+            if (-not (Test-Path "$env:VSINSTALLDIR\DIA SDK\lib\amd64\diaguids.lib")) { throw "DIA SDK missing (VSINSTALLDIR=$env:VSINSTALLDIR)" }
           }
           $o = ./ver.exe; $o
           $vc = $env:VCToolsVersion.Split('.')

@@ -116,6 +116,7 @@ $channelUrl = switch ($vsChannel) {
   default { $vsChannel }
 }
 $crtStatic = Test-True (Get-In 'CRT_STATIC' 'true')
+$diaSdk = Test-True (Get-In 'DIA_SDK' 'true')
 $debugLibs = Test-True (Get-In 'DEBUG_LIBS' 'true')
 $acceptLicense = Test-True (Get-In 'ACCEPT_LICENSE' 'false')
 $swiftToolchainIn = Get-In 'SWIFT_TOOLCHAIN' 'auto'
@@ -289,7 +290,7 @@ function Resolve-Portable {
   try {
     foreach ($p in $doc.RootElement.GetProperty('packages').EnumerateArray()) {
       $id = $p.GetProperty('id').GetString()
-      if ($id -notmatch '^Microsoft\.(VC\.[\d.]+\.CRT\.|VisualCpp\.CRT\.Headers$)') { continue }
+      if ($id -notmatch '^Microsoft\.(VC\.[\d.]+\.CRT\.|VisualCpp\.CRT\.Headers$|VisualCpp\.DIA\.SDK$)') { continue }
       $o = @{ id = $id; version = $p.GetProperty('version').GetString(); payloads = @(); deps = @() }
       # (JsonElement.TryGetProperty's out parameter does not bind from PowerShell: enumerate instead)
       $props = @{}; foreach ($pp in $p.EnumerateObject()) { $props[$pp.Name] = $pp.Value }
@@ -329,6 +330,7 @@ function Resolve-Portable {
   $stem = [regex]::Match($hdr.id, '^Microsoft\.VC\.([\d.]+)\.CRT\.Headers\.base$').Groups[1].Value   # e.g. 14.44.17.14 or 14.52
   $ids = @("Microsoft.VC.$stem.CRT.Headers.base", "Microsoft.VC.$stem.CRT.$vsArch.Store.base")
   if ($crtStatic) { $ids += "Microsoft.VC.$stem.CRT.$vsArch.Desktop.base" }
+  if ($diaSdk) { $ids += 'Microsoft.VisualCpp.DIA.SDK' }   # DIA SDK (diaguids.lib): LLVM's CMake exports reference it
   $pkgs = @()
   foreach ($id in $ids) {
     $p = $pk[$id.ToLowerInvariant()]
@@ -340,7 +342,7 @@ function Resolve-Portable {
   }
   Write-Host "    MSVC CRT packages: $(($pkgs | ForEach-Object { "$($_.id) ($($_.version))" }) -join ', ')"
   Write-Host "    Windows SDK NuGet: $nugetVer"
-  $key = "setup-msvc-v1-$hostOs-$arch-crt$($hdr.version)-sdk$nugetVer-static$([int]$crtStatic)-dbg$([int]$debugLibs)"
+  $key = "setup-msvc-v1-$hostOs-$arch-crt$($hdr.version)-sdk$nugetVer-static$([int]$crtStatic)-dbg$([int]$debugLibs)-dia$([int]$diaSdk)"
   $plan = [ordered]@{
     key = $key; arch = $arch; hostArch = $hostArch; msvcPackageVersion = $hdr.version; msvcStem = $stem; crt = $pkgs
     nugetVersion = $nugetVer; licenses = [ordered]@{ msvc = $vsLicense; winsdk = $sdkLicense }; installDir = $installDir
@@ -456,7 +458,10 @@ function Install-Portable {
         if ($h -ne $p.sha256.ToUpperInvariant()) { throw "sha256 mismatch for $($p.id): $h != $($p.sha256)" }
       }
       $bytes += (Get-Item $vsix).Length
-      $n = Expand-ZipPrefix $vsix 'Contents/VC/' (Join-Path $sysroot 'VC')
+      if ($p.id -match 'DIA\.SDK$') {
+        Write-Host "      entries: $((Get-ZipTopDirs $vsix 2) -join ', ')"
+        $n = Expand-ZipPrefix $vsix 'Contents/' $sysroot   # -> <sysroot>/DIA SDK/{include,lib,bin,idl}
+      } else { $n = Expand-ZipPrefix $vsix 'Contents/VC/' (Join-Path $sysroot 'VC') }
       Write-Host "      $($p.id): $n files"
       Remove-Item $vsix -Force
     }
@@ -626,6 +631,7 @@ function Install-Portable {
   Export-Var 'LIB' (($libDirs | ForEach-Object { & $nat $_ }) -join $sep)
   Export-Var 'LIBPATH' (& $nat "$vc/lib/$a")
   Export-Var 'VCINSTALLDIR' (& $nat "$sysroot/VC$ds")
+  if (Test-Path (Join-Path $sysroot 'DIA SDK')) { Export-Var 'VSINSTALLDIR' "$sysN$ds" }   # VS root layout: <root>\VC, <root>\DIA SDK
   Export-Var 'VCToolsInstallDir' "$vcN$ds"
   Export-Var 'VCToolsVersion' $vcRoot.Name
   Export-Var 'WindowsSdkDir' "$kitsN$ds"
