@@ -26,11 +26,51 @@ function Invoke-Case([string]$name, [scriptblock]$body, [string]$expect) {
   Write-Host ("[{0}] {1} ({2:n1}s)" -f $st, $name, $sw.Elapsed.TotalSeconds)
   [void]$results.Add([pscustomobject]@{ case = $name; result = $st; seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1) })
 }
+# Minimal PE import-table reader, to diagnose STATUS_DLL_NOT_FOUND (0xC0000135)
+function Get-PEImports([string]$path) {
+  $b = [IO.File]::ReadAllBytes($path)
+  $pe = [BitConverter]::ToInt32($b, 0x3C)
+  $nsec = [BitConverter]::ToUInt16($b, $pe + 6); $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
+  $opt = $pe + 24; $magic = [BitConverter]::ToUInt16($b, $opt)
+  $dd = if ($magic -eq 0x20b) { $opt + 112 } else { $opt + 96 }
+  $secs = @(); $st = $opt + $optSize
+  for ($i = 0; $i -lt $nsec; $i++) { $o = $st + 40 * $i; $secs += [pscustomobject]@{ va = [BitConverter]::ToUInt32($b, $o + 12); vs = [BitConverter]::ToUInt32($b, $o + 8); raw = [BitConverter]::ToUInt32($b, $o + 20) } }
+  $rva2off = { param($r) foreach ($s in $secs) { if ($r -ge $s.va -and $r -lt $s.va + [math]::Max($s.vs, 1)) { return $r - $s.va + $s.raw } }; return -1 }
+  $names = @()
+  foreach ($dirIdx in 1, 13) {
+    $rva = [BitConverter]::ToUInt32($b, $dd + 8 * $dirIdx); if ($rva -eq 0) { continue }
+    $off = & $rva2off $rva; $size = if ($dirIdx -eq 1) { 20 } else { 32 }; $nameAt = if ($dirIdx -eq 1) { 12 } else { 4 }
+    while ($off -ge 0) {
+      $n = [BitConverter]::ToUInt32($b, $off + $nameAt); if ($n -eq 0) { break }
+      $no = & $rva2off $n; $e = $no; while ($b[$e] -ne 0) { $e++ }
+      $names += [Text.Encoding]::ASCII.GetString($b, $no, $e - $no) + $(if ($dirIdx -eq 13) { ' (delay)' } else { '' })
+      $off += $size
+    }
+  }
+  return $names
+}
+function Show-MissingDlls([string]$exe) {
+  $dirs = @((Split-Path (Resolve-Path $exe))) + ($env:PATH -split ';' | Where-Object { $_ }) + "$env:SystemRoot\System32"
+  $seen = @{}; $queue = New-Object System.Collections.Queue; $queue.Enqueue((Resolve-Path $exe).Path)
+  while ($queue.Count -gt 0) {
+    $f = $queue.Dequeue()
+    foreach ($imp in Get-PEImports $f) {
+      $dll = ($imp -replace ' \(delay\)$', '')
+      if ($dll -match '^(api|ext)-ms-' -or $seen.ContainsKey($dll)) { continue }
+      $hit = $dirs | ForEach-Object { Join-Path $_ $dll } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+      $seen[$dll] = $true
+      if ($hit) { $queue.Enqueue($hit) } else { "   MISSING: $imp (needed by $(Split-Path $f -Leaf))" }
+    }
+  }
+}
 function Run([string]$exe) {
   if ($script:caseFailed) { return }
   "> $exe $($args -join ' ')"
   & $exe @args 2>&1 | ForEach-Object { "$_" }
-  if ($LASTEXITCODE -ne 0) { "!! $exe exited with $LASTEXITCODE"; $script:caseFailed = $true }
+  if ($LASTEXITCODE -ne 0) {
+    "!! $exe exited with $LASTEXITCODE"; $script:caseFailed = $true
+    if ($LASTEXITCODE -eq -1073741515 -and $exe -like '*.exe' -and (Test-Path $exe)) { '   DLL not found; import closure:'; Show-MissingDlls $exe }
+  }
 }
 
 Invoke-Case 'info' {
