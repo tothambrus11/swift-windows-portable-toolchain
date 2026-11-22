@@ -8,6 +8,7 @@ on:
 
 jobs:
   inspect-bundle:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -31,4 +32,28 @@ jobs:
         if: always()
         with:
           name: bundle-inspection-${{ matrix.arch }}
+          path: out/
+
+  minimal-portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Range-fetch needed containers, build minimal layout, dedup, archive
+        run: ./build-eval/minimal-zip.ps1 -Arch ${{ matrix.arch }} -Out "$PWD\out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: minimal-portable-${{ matrix.arch }}
           path: out/
