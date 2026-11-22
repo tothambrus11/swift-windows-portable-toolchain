@@ -209,3 +209,41 @@ jobs:
         run: |
           . ./managers/common/ci/fresh-env.ps1
           ./managers/common/ci/test-swift.ps1 -Project "$env:RUNNER_TEMP\proj"
+
+  mise:
+    # The same plugin in mise (vfox backend): checks that lib/compat.lua keeps mise working and that mise
+    # installs now share the per-user sysroot too.
+    name: mise x64 prebuilt, same plugin (VS hidden)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      JOB_LABEL: mise x64 (same plugin)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hide Visual Studio, Build Tools and Windows SDK
+        run: ./managers/common/ci/hide-vs.ps1 | Out-Host
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: false
+      - name: Install through mise
+        run: |
+          "MISE_BIN_DIR=$(Split-Path (Get-Command mise).Source)" >> $env:GITHUB_ENV
+          $miseDir = Split-Path (Get-Command mise).Source
+          ./managers/vfox/pack.ps1 -Out "$env:RUNNER_TEMP\plugin.zip"
+          Expand-Archive "$env:RUNNER_TEMP\plugin.zip" "$env:RUNNER_TEMP\plugin"
+          . ./managers/common/ci/clean-env.ps1; $env:Path = "$miseDir;$env:Path"
+          mise plugins link swift-portable "$env:RUNNER_TEMP\plugin"
+          $proj = "$env:RUNNER_TEMP\proj"; New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj
+          Set-Content mise.toml "[tools]`nswift-portable = { version = `"$env:SWIFT_VERSION`", source = `"prebuilt`", accept_msvc_license = true }"
+          $t = Measure-Command { mise install 2>&1 | Out-Host }
+          if ($LASTEXITCODE) { exit 1 }
+          "## mise x64: mise install took $([math]::Round($t.TotalSeconds))s" >> $env:GITHUB_STEP_SUMMARY
+          Get-Content "$(mise where swift-portable)\mise-env.json"
+          Get-Content "$env:LOCALAPPDATA\swift-portable\msvc-sysroot-x64\sysroot.json"
+      - name: Build + run + test through mise exec
+        run: |
+          . ./managers/common/ci/clean-env.ps1; $env:Path = "$env:MISE_BIN_DIR;$env:Path"
+          Set-Location "$env:RUNNER_TEMP\proj"
+          & "$env:GITHUB_WORKSPACE/managers/common/ci/test-swift.ps1" -Project "$env:RUNNER_TEMP\proj" -Exec 'mise exec --'

@@ -91,7 +91,10 @@ param(
   # -Part swift: unpack a prebuilt Swift-only archive (tar.xz with one top-level directory) instead of the
   # official installer. Extracted with the in-box bsdtar, which keeps the archive's hard links.
   [string]$PrebuiltUrl = '',
-  [string]$PrebuiltSha256 = ''
+  [string]$PrebuiltSha256 = '',
+  # -Part swift: rename Swift\{Toolchains,Runtimes,Platforms}\<version...> to ...\current, so that tool managers
+  # can compute PATH/SDKROOT from the install directory alone (vfox EnvKeys, Scoop env_add_path)
+  [switch]$StableNames
 )
 
 $ErrorActionPreference = 'Stop'
@@ -357,6 +360,13 @@ $stats.swift_extract_s = [math]::Round($t.Elapsed.TotalSeconds, 1)
 }  # doSwift (download + extraction)
 
 $swiftRoot = Join-Path $Target 'Swift'
+if ($StableNames -and $Part -in 'all', 'swift') {
+  foreach ($sub in 'Toolchains', 'Runtimes', 'Platforms') {
+    $d = @(Get-ChildItem (Join-Path $swiftRoot $sub) -Directory)
+    if ($d.Count -ne 1) { throw "-StableNames: expected one directory in Swift\$sub, found $($d.Count)" }
+    if ($d[0].Name -ne 'current') { Rename-Item $d[0].FullName 'current' }
+  }
+}
 $toolchainBin = $null; $runtimeBin = $null; $sdkRoot = $null
 if ($Part -ne 'fetch-sysroot') {
 $swiftExe = Get-ChildItem -Path (Join-Path $swiftRoot 'Toolchains') -Recurse -Filter swift.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\Toolchains\\[^\\]+\\usr\\bin\\swift\.exe$' } | Select-Object -First 1
@@ -409,7 +419,7 @@ foreach ($extra in 'ide', 'dbg') {
 }
 if ($missing.Count -gt 0) { Write-Warning "toolchain still misses side-by-side assemblies: $($missing -join ', ')" }
 }  # doSwift (SxS assemblies)
-$rtDir = if ($SwiftVersion) { Join-Path $swiftRoot "Runtimes\$SwiftVersion" } else { Get-ChildItem (Join-Path $swiftRoot 'Runtimes') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
+$rtDir = if ($SwiftVersion -and (Test-Path (Join-Path $swiftRoot "Runtimes\$SwiftVersion"))) { Join-Path $swiftRoot "Runtimes\$SwiftVersion" } else { Get-ChildItem (Join-Path $swiftRoot 'Runtimes') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
 $runtimeBin = Join-Path "$rtDir" 'usr\bin'
 $platform = Get-ChildItem -Path (Join-Path $swiftRoot 'Platforms') -Recurse -Directory -Filter 'Windows.platform' | Select-Object -First 1
 if (-not (Test-Path (Join-Path $runtimeBin 'swiftCore.dll')) -or -not $platform) {

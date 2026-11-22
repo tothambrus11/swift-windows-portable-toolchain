@@ -29,7 +29,7 @@ local function windows(ctx)
     local script = file.join_path(RUNTIME.pluginDirPath, "scripts", "setup-portable-swift.ps1")
     local base = q(powershell()) .. " -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " .. q(script)
         .. " -Target " .. q(root) .. " -Arch " .. swiftorg.win_arch()
-    local extra = ""
+    local extra = compat.is_mise and "" or " -StableNames"   -- see env_keys.lua
     if swiftorg.truthy(options.no_asserts) then
         extra = extra .. " -NoAsserts"
     end
@@ -45,7 +45,7 @@ local function windows(ctx)
     elseif envjson == nil and swiftorg.source(options) == "prebuilt" then
         -- standalone vfox: its tar extractor drops hard links, so let the in-box bsdtar unpack the archive
         local url, sha256 = swiftorg.prebuilt_asset(version, options)
-        run(base .. " -Part swift -SwiftVersion " .. version .. " -PrebuiltUrl " .. q(url) .. " -PrebuiltSha256 " .. sha256)
+        run(base .. " -Part swift -SwiftVersion " .. version .. " -PrebuiltUrl " .. q(url) .. " -PrebuiltSha256 " .. sha256 .. extra)
         envjson = swiftorg.read_env_json(root)
     elseif envjson == nil then
         run(base .. " -Part swift -SwiftVersion " .. version .. extra)
