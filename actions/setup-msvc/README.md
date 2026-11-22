@@ -69,7 +69,7 @@ How it behaves:
 | `vs-channel` | `18` | portable: `18` = VS 2026 Stable channel (has 14.29 … 14.5x), `17` = VS 2022, or a channel URL |
 | `mode` | `auto` | `auto`: installed if the runner's VS satisfies arch + toolset + SDK, else portable; always portable off Windows. `installed`: fail if not satisfiable. `portable`: always download |
 | `crt-static` | `true` | portable: also fetch the static CRT (`libcmt`, `libcpmt`, …; +50–70 MB). Plain `clang foo.c` defaults to `/MT` and needs it |
-| `debug-libs` | `false` | portable: keep the debug CRT libs (`msvcrtd`, …) |
+| `debug-libs` | `true` | portable: keep the debug CRT libs (`msvcrtd`, `libcmtd`, …). CMake's compiler checks and Debug builds link them; `false` saves ~40 MB on disk |
 | `swift-toolchain` | `auto` | portable: the Swift toolchain to wire: `auto` (the `swift.exe` on PATH, Windows), `none`, or a path |
 | `modulemaps` | `copy` | portable: `copy` Swift's modulemaps into the sysroot, `overlay` (a clang VFS overlay referenced from `clang.cfg`), or `none` |
 | `export-cc` | `false` | portable: `clang-cl` exports `CC`/`CXX`=clang-cl (for CMake C/C++), or give an explicit path |

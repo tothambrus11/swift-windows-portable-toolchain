@@ -116,7 +116,7 @@ $channelUrl = switch ($vsChannel) {
   default { $vsChannel }
 }
 $crtStatic = Test-True (Get-In 'CRT_STATIC' 'true')
-$debugLibs = Test-True (Get-In 'DEBUG_LIBS' 'false')
+$debugLibs = Test-True (Get-In 'DEBUG_LIBS' 'true')
 $acceptLicense = Test-True (Get-In 'ACCEPT_LICENSE' 'false')
 $swiftToolchainIn = Get-In 'SWIFT_TOOLCHAIN' 'auto'
 $modulemaps = (Get-In 'MODULEMAPS' 'copy').ToLowerInvariant()
@@ -462,7 +462,7 @@ function Install-Portable {
     }
     $msvcTools = Join-Path $sysroot 'VC/Tools/MSVC'
     Get-ChildItem $msvcTools -Recurse -File -Filter *.pdb | Remove-Item -Force
-    if (-not (Test-True (Get-In 'DEBUG_LIBS' 'false'))) {
+    if (-not $debugLibs) {
       Get-ChildItem $msvcTools -Recurse -File | Where-Object { $_.Extension -ieq '.lib' -and $_.BaseName -match '^(libcmtd|libcpmtd\d?|libvcruntimed|libconcrtd\d?|msvcrtd|msvcprtd|vcruntimed|concrtd|libompd|vcompd|vcampd|comsuppd|comsuppwd|msvcmrtd.*|ptrustmd)$' } | Remove-Item -Force
     }
     Get-ChildItem $msvcTools -Recurse -Directory | Where-Object { $_.Name -in 'store', 'uwp', 'enclave', 'onecore' } | Sort-Object { $_.FullName.Length } -Descending |

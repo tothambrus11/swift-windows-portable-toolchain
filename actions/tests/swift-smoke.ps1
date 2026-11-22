@@ -77,7 +77,10 @@ Invoke-Case 'info' {
   Run swift --version
   where.exe swift clang lld-link cl link 2>$null
   '--- runtime DLL resolution (PATH order):'
-  where.exe swiftCore.dll Foundation.dll swiftWinSDK.dll swiftCRT.dll vcruntime140.dll 2>$null
+  where.exe swiftCore.dll Foundation.dll swiftWinSDK.dll swiftCRT.dll swift_Builtin_float.dll vcruntime140.dll 2>$null
+  $swRoot = Split-Path (Split-Path (Split-Path (Split-Path (Split-Path (Get-Command swift).Source))))
+  "--- swift_Builtin_float* under ${swRoot}:"
+  Get-ChildItem $swRoot -Recurse -Filter 'swift_Builtin_float*' -ErrorAction SilentlyContinue | ForEach-Object FullName
   Get-ChildItem env: | Where-Object Name -match '^(INCLUDE|LIB|LIBPATH|SDKROOT|VC|Windows|UCRT|Universal|WINSYSROOT)' | Format-Table -AutoSize | Out-String -Width 400
   $cfg = Join-Path (Split-Path (Get-Command swift).Source) 'clang.cfg'
   if (Test-Path $cfg) { "--- $cfg"; Get-Content $cfg } else { '(no clang.cfg)' }

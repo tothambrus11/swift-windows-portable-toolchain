@@ -42,7 +42,7 @@ inputs:
     default: 'true'
   debug-libs:
     description: 'Portable mode: keep the debug CRT libraries (msvcrtd, ...).'
-    default: 'false'
+    default: 'true'
   swift-toolchain:
     description: >-
       Portable mode: Swift toolchain to wire to the sysroot (writes clang.cfg/clang++.cfg next to its clang and
