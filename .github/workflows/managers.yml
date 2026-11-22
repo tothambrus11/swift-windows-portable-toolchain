@@ -53,7 +53,8 @@ jobs:
       - name: License gate - install without acceptance must fail and download nothing from Microsoft
         if: ${{ !matrix.vs }}
         run: |
-          $out = scoop install swift-portable/swift-portable 2>&1 | Out-String
+          # Scoop runs installer scripts in-process: the gate's `throw` surfaces as a terminating error
+          try { $out = scoop install swift-portable/swift-portable 2>&1 | Out-String } catch { $out = "terminating error: $_" }
           $out
           $apps = "$env:USERPROFILE\scoop\apps"
           $leaked = @(Get-ChildItem "$apps\msvc-sysroot" -Recurse -Include *.vsix, *.nupkg, *.lib -ErrorAction SilentlyContinue)
@@ -78,7 +79,7 @@ jobs:
           Get-Content "$apps\swift-portable\current\Swift\Toolchains\current\usr\bin\clang.cfg" -ErrorAction SilentlyContinue
           if ($env:VS_PRESENT -eq 'true' -and (Test-Path "$apps\msvc-sysroot\current\winsysroot\VC")) { Write-Host '::error::Microsoft files downloaded although VS is installed'; exit 1 }
           $exe = Get-ChildItem "$apps\swift-portable\current\Swift\Toolchains" -Recurse -Filter swift-frontend.exe | Select-Object -First 1
-          "hard links of swift-frontend.exe: $((fsutil hardlink list $exe.FullName | Measure-Object).Count)"
+          "files in usr\bin that are hard links: $(@(Get-ChildItem $exe.DirectoryName -File | Where-Object LinkType -eq 'HardLink').Count)"
           [Environment]::GetEnvironmentVariable('Path', 'User')
           [Environment]::GetEnvironmentVariable('SDKROOT', 'User')
       - name: Fresh shell (user env from the registry only) - build, run, test
@@ -163,7 +164,7 @@ jobs:
           $envj = Get-ChildItem "$env:USERPROFILE\.vfox", "$env:USERPROFILE\.version-fox" -Recurse -Filter mise-env.json -ErrorAction SilentlyContinue | Select-Object -First 1
           "env json: $($envj.FullName)"; Get-Content $envj.FullName
           $exe = Get-ChildItem (Split-Path $envj.FullName) -Recurse -Filter swift-frontend.exe | Select-Object -First 1
-          "hard links of swift-frontend.exe: $((fsutil hardlink list $exe.FullName | Measure-Object).Count)"
+          "files in usr\bin that are hard links: $(@(Get-ChildItem $exe.DirectoryName -File | Where-Object LinkType -eq 'HardLink').Count)"
       - name: Per-project version (.vfox.toml) and build, run, test through vfox exec
         run: |
           if ($env:VS_PRESENT -ne 'true') { . ./managers/common/ci/clean-env.ps1 }

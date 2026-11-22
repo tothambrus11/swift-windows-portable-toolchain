@@ -2,7 +2,8 @@ local file = require("compat").file
 local swiftorg = require("swiftorg")
 
 function PLUGIN:EnvKeys(ctx)
-    local root = ctx.path or (ctx.main and ctx.main.path)
+    -- standalone vfox: ctx.path is the version directory (or its sdks\ link), ctx.main.path the install itself
+    local root = (not require("compat").is_mise and ctx.main and ctx.main.path) or ctx.path
     if RUNTIME.osType == "darwin" then
         return { { key = "PATH", value = file.join_path(root, "toolchain", "usr", "bin") } }
     elseif RUNTIME.osType ~= "windows" then
